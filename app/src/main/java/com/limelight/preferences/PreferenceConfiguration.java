@@ -59,6 +59,11 @@ public class PreferenceConfiguration {
     private static final String VIBRATE_FALLBACK_STRENGTH_PREF_STRING = "seekbar_vibrate_fallback_strength";
     private static final String FLIP_FACE_BUTTONS_PREF_STRING = "checkbox_flip_face_buttons";
     private static final String TOUCHSCREEN_TRACKPAD_PREF_STRING = "checkbox_touchscreen_trackpad";
+    static final String TOUCH_MODE_PREF_STRING = "list_touch_mode";
+
+    public static final int TOUCH_MODE_TRACKPAD = 0;
+    public static final int TOUCH_MODE_TOUCHSCREEN = 1;
+    public static final int TOUCH_MODE_NATIVE = 2;
     private static final String LATENCY_TOAST_PREF_STRING = "checkbox_enable_post_stream_toast";
     private static final String FRAME_PACING_PREF_STRING = "frame_pacing";
     private static final String ABSOLUTE_MOUSE_MODE_PREF_STRING = "checkbox_absolute_mouse_mode";
@@ -146,6 +151,7 @@ public class PreferenceConfiguration {
     public boolean vibrateFallbackToDevice;
     public int vibrateFallbackToDeviceStrength;
     public boolean touchscreenTrackpad;
+    public int touchMode;
     public MoonBridge.AudioConfiguration audioConfiguration;
     public int framePacing;
     public boolean absoluteMouseMode;
@@ -592,7 +598,14 @@ public class PreferenceConfiguration {
         config.vibrateFallbackToDevice = prefs.getBoolean(VIBRATE_FALLBACK_PREF_STRING, DEFAULT_VIBRATE_FALLBACK);
         config.vibrateFallbackToDeviceStrength = prefs.getInt(VIBRATE_FALLBACK_STRENGTH_PREF_STRING, DEFAULT_VIBRATE_FALLBACK_STRENGTH);
         config.flipFaceButtons = prefs.getBoolean(FLIP_FACE_BUTTONS_PREF_STRING, DEFAULT_FLIP_FACE_BUTTONS);
-        config.touchscreenTrackpad = prefs.getBoolean(TOUCHSCREEN_TRACKPAD_PREF_STRING, DEFAULT_TOUCHSCREEN_TRACKPAD);
+        if (prefs.contains(TOUCH_MODE_PREF_STRING)) {
+            config.touchMode = parseTouchMode(prefs.getString(TOUCH_MODE_PREF_STRING, "trackpad"));
+        } else {
+            boolean legacyTrackpad = prefs.getBoolean(TOUCHSCREEN_TRACKPAD_PREF_STRING, DEFAULT_TOUCHSCREEN_TRACKPAD);
+            config.touchMode = legacyTrackpad ? TOUCH_MODE_TRACKPAD : TOUCH_MODE_TOUCHSCREEN;
+            prefs.edit().putString(TOUCH_MODE_PREF_STRING, touchModeToPrefValue(config.touchMode)).apply();
+        }
+        config.touchscreenTrackpad = (config.touchMode == TOUCH_MODE_TRACKPAD);
         config.enableLatencyToast = prefs.getBoolean(LATENCY_TOAST_PREF_STRING, DEFAULT_LATENCY_TOAST);
         config.absoluteMouseMode = prefs.getBoolean(ABSOLUTE_MOUSE_MODE_PREF_STRING, DEFAULT_ABSOLUTE_MOUSE_MODE);
         config.enableAudioFx = prefs.getBoolean(ENABLE_AUDIO_FX_PREF_STRING, DEFAULT_ENABLE_AUDIO_FX);
@@ -620,11 +633,32 @@ public class PreferenceConfiguration {
         editor.apply();
     }
 
-    public static void saveLiveStreamControls(Context context, Boolean touchscreenTrackpad, Boolean onscreenController, Boolean enablePerfOverlay) {
+    public static int parseTouchMode(String value) {
+        if ("native".equals(value)) {
+            return TOUCH_MODE_NATIVE;
+        }
+        if ("touchscreen".equals(value)) {
+            return TOUCH_MODE_TOUCHSCREEN;
+        }
+        return TOUCH_MODE_TRACKPAD;
+    }
+
+    public static String touchModeToPrefValue(int mode) {
+        if (mode == TOUCH_MODE_NATIVE) {
+            return "native";
+        }
+        if (mode == TOUCH_MODE_TOUCHSCREEN) {
+            return "touchscreen";
+        }
+        return "trackpad";
+    }
+
+    public static void saveLiveStreamControls(Context context, Integer touchMode, Boolean onscreenController, Boolean enablePerfOverlay) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
         SharedPreferences.Editor editor = prefs.edit();
-        if (touchscreenTrackpad != null) {
-            editor.putBoolean(TOUCHSCREEN_TRACKPAD_PREF_STRING, touchscreenTrackpad);
+        if (touchMode != null) {
+            editor.putString(TOUCH_MODE_PREF_STRING, touchModeToPrefValue(touchMode));
+            editor.putBoolean(TOUCHSCREEN_TRACKPAD_PREF_STRING, touchMode == TOUCH_MODE_TRACKPAD);
         }
         if (onscreenController != null) {
             editor.putBoolean(ONSCREEN_CONTROLLER_PREF_STRING, onscreenController);

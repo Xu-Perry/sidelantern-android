@@ -65,6 +65,10 @@
     <string name="sl_settings_custom">Custom</string>
     <string name="sl_settings_touchpad">Touchpad</string>
     <string name="sl_settings_touchscreen">Touchscreen</string>
+    <string name="sl_settings_touch_native">Multi-Touch</string>
+    <string name="sl_settings_touch_native_full">Native Multi-Touch</string>
+    <string name="sl_settings_touch_summary">Choose how screen touches control the remote computer.</string>
+    <string name="sl_touch_native_unsupported">This host does not support native multi-touch. Falling back to Touchscreen mode.</string>
     <string name="sl_settings_custom_resolution_title">Enter Custom Resolution</string>
     <string name="sl_settings_custom_width_hint">Width (e.g. 1920)</string>
     <string name="sl_settings_custom_height_hint">Height (e.g. 1080)</string>

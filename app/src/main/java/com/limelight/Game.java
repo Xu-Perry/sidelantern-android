@@ -100,7 +100,9 @@ import java.lang.reflect.Method;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -223,6 +225,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     // SideLantern live touch mode switching & touchscreen pinch-zoom/pan
     private boolean waitForAllFingersUp = false;
     private int activeFingerCount = 0;
+    private final Set<Integer> activeNativeTouchPointers = new HashSet<>();
+    private boolean nativeTouchFallbackToAbsolute = false;
     private ScaleGestureDetector scaleGestureDetector;
     private float streamZoomScale = 1.0f;
     private float streamPanX = 0f;
@@ -1619,6 +1623,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private float[] getStreamViewRelativeNormalizedXY(View view, MotionEvent event, int pointerIndex) {
+        int streamW = streamView.getWidth();
+        int streamH = streamView.getHeight();
+        if (streamW <= 0 || streamH <= 0) {
+            return new float[] { 0.0f, 0.0f };
+        }
+
         float normalizedX = event.getX(pointerIndex);
         float normalizedY = event.getY(pointerIndex);
 
@@ -1632,11 +1642,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         normalizedX = Math.max(normalizedX, 0.0f);
         normalizedY = Math.max(normalizedY, 0.0f);
 
-        normalizedX = Math.min(normalizedX, streamView.getWidth());
-        normalizedY = Math.min(normalizedY, streamView.getHeight());
+        normalizedX = Math.min(normalizedX, streamW);
+        normalizedY = Math.min(normalizedY, streamH);
 
-        normalizedX /= streamView.getWidth();
-        normalizedY /= streamView.getHeight();
+        normalizedX /= streamW;
+        normalizedY /= streamH;
 
         return new float[] { normalizedX, normalizedY };
     }
@@ -1726,10 +1736,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         float[] contactAreaMinorCartesian = polarToCartesian(contactAreaMinor, (float)(orientation + (Math.PI / 2)));
 
         // Normalize the contact area to the stream view size
-        contactAreaMajorCartesian[0] = Math.min(Math.abs(contactAreaMajorCartesian[0]), streamView.getWidth()) / streamView.getWidth();
-        contactAreaMinorCartesian[0] = Math.min(Math.abs(contactAreaMinorCartesian[0]), streamView.getWidth()) / streamView.getWidth();
-        contactAreaMajorCartesian[1] = Math.min(Math.abs(contactAreaMajorCartesian[1]), streamView.getHeight()) / streamView.getHeight();
-        contactAreaMinorCartesian[1] = Math.min(Math.abs(contactAreaMinorCartesian[1]), streamView.getHeight()) / streamView.getHeight();
+        int streamW = streamView.getWidth();
+        int streamH = streamView.getHeight();
+        if (streamW <= 0 || streamH <= 0) {
+            return new float[] { 0.0f, 0.0f };
+        }
+        contactAreaMajorCartesian[0] = Math.min(Math.abs(contactAreaMajorCartesian[0]), streamW) / streamW;
+        contactAreaMinorCartesian[0] = Math.min(Math.abs(contactAreaMinorCartesian[0]), streamW) / streamW;
+        contactAreaMajorCartesian[1] = Math.min(Math.abs(contactAreaMajorCartesian[1]), streamH) / streamH;
+        contactAreaMinorCartesian[1] = Math.min(Math.abs(contactAreaMinorCartesian[1]), streamH) / streamH;
 
         // Convert the normalized values back into polar coordinates
         return new float[] { cartesianToR(contactAreaMajorCartesian), cartesianToR(contactAreaMinorCartesian) };
@@ -1827,30 +1842,69 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private boolean trySendTouchEvent(View view, MotionEvent event) {
+        if (conn == null) {
+            return false;
+        }
         byte eventType = getLiTouchTypeFromEvent(event);
         if (eventType < 0) {
             return false;
         }
 
-        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-            // Move events may impact all active pointers
+        int masked = event.getActionMasked();
+        if (masked == MotionEvent.ACTION_MOVE) {
+            // Move events may impact all active tracked pointers
             for (int i = 0; i < event.getPointerCount(); i++) {
+                int pointerId = event.getPointerId(i);
+                if (!activeNativeTouchPointers.contains(pointerId)) {
+                    continue;
+                }
                 if (!sendTouchEventForPointer(view, event, eventType, i)) {
                     return false;
                 }
             }
             return true;
         }
-        else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+        else if (masked == MotionEvent.ACTION_CANCEL) {
+            activeNativeTouchPointers.clear();
             // Cancel impacts all active pointers
             return conn.sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
                     0, 0, 0, 0, 0,
                     MoonBridge.LI_ROT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
         }
+        else if (masked == MotionEvent.ACTION_DOWN || masked == MotionEvent.ACTION_POINTER_DOWN) {
+            int idx = event.getActionIndex();
+            int pointerId = event.getPointerId(idx);
+            if (!sendTouchEventForPointer(view, event, eventType, idx)) {
+                return false;
+            }
+            activeNativeTouchPointers.add(pointerId);
+            return true;
+        }
+        else if (masked == MotionEvent.ACTION_UP || masked == MotionEvent.ACTION_POINTER_UP) {
+            int idx = event.getActionIndex();
+            int pointerId = event.getPointerId(idx);
+            if (!activeNativeTouchPointers.remove(pointerId)) {
+                return true;
+            }
+            return sendTouchEventForPointer(view, event, eventType, idx);
+        }
         else {
-            // Up, Down, and Hover events are specific to the action index
+            // Hover events
             return sendTouchEventForPointer(view, event, eventType, event.getActionIndex());
         }
+    }
+
+    private boolean handleNativeMultiTouchEvent(View view, MotionEvent event) {
+        if (trySendTouchEvent(view, event)) {
+            return true;
+        }
+        // Host does not support native touch (LI_ERR_UNSUPPORTED) -> fall back gracefully
+        activeNativeTouchPointers.clear();
+        if (!nativeTouchFallbackToAbsolute) {
+            nativeTouchFallbackToAbsolute = true;
+            Toast.makeText(this, R.string.sl_touch_native_unsupported, Toast.LENGTH_LONG).show();
+        }
+        return false;
     }
 
     // Returns true if the event was consumed
@@ -2093,6 +2147,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         twoFingerGestureActive = false;
                     }
                     return true;
+                }
+
+                // Native Multi-Touch mode: pass all fingers directly via Sunshine native touch protocol
+                if (prefConfig.touchMode == PreferenceConfiguration.TOUCH_MODE_NATIVE && !nativeTouchFallbackToAbsolute) {
+                    if (handleNativeMultiTouchEvent(view, event)) {
+                        return true;
+                    }
                 }
 
                 int actionIndex = event.getActionIndex();
@@ -2902,7 +2963,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             hideSoftKeyboard();
             if (sidebarOverlay != null) {
                 sidebarOverlay.updateControlState(
-                        prefConfig.touchscreenTrackpad,
+                        prefConfig.touchMode,
                         prefConfig.onscreenController,
                         prefConfig.enablePerfOverlay);
                 sidebarOverlay.open();
@@ -2913,7 +2974,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Right-edge sidebar overlay
         sidebarOverlay = new StreamSidebarOverlay(this, shortcutStore);
         sidebarOverlay.updateControlState(
-                prefConfig.touchscreenTrackpad,
+                prefConfig.touchMode,
                 prefConfig.onscreenController,
                 prefConfig.enablePerfOverlay);
         sidebarOverlay.setCallbacks(new StreamSidebarOverlay.Callbacks() {
@@ -2965,8 +3026,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override
-            public void onTouchModeChanged(boolean trackpadMode) {
-                applyTouchMode(trackpadMode);
+            public void onTouchModeChanged(int touchMode) {
+                applyTouchMode(touchMode);
             }
 
             @Override
@@ -2994,11 +3055,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         rootOverlayContainer.addView(sidebarOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Touchscreen 2-finger pinch-zoom detector
+        // Touchscreen 2-finger pinch-zoom detector (only active in Touchscreen mode)
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
             public boolean onScale(ScaleGestureDetector detector) {
-                if (prefConfig.touchscreenTrackpad) return false;
+                if (prefConfig.touchscreenTrackpad
+                        || (prefConfig.touchMode == PreferenceConfiguration.TOUCH_MODE_NATIVE && !nativeTouchFallbackToAbsolute)) {
+                    return false;
+                }
                 float factor = detector.getScaleFactor();
                 float newScale = Math.max(1.0f, Math.min(4.0f, streamZoomScale * factor));
                 if (newScale != streamZoomScale) {
@@ -3063,15 +3127,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 ctx.setPointerCount(0);
             }
         }
+        if (!activeNativeTouchPointers.isEmpty()) {
+            activeNativeTouchPointers.clear();
+            if (conn != null) {
+                conn.sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
+                        0, 0, 0, 0, 0, MoonBridge.LI_ROT_UNKNOWN);
+            }
+        }
     }
 
-    private void applyTouchMode(boolean trackpadMode) {
-        if (prefConfig.touchscreenTrackpad == trackpadMode) {
+    private void applyTouchMode(int touchMode) {
+        if (prefConfig.touchMode == touchMode) {
             return;
         }
+        boolean trackpadMode = (touchMode == PreferenceConfiguration.TOUCH_MODE_TRACKPAD);
+        prefConfig.touchMode = touchMode;
         prefConfig.touchscreenTrackpad = trackpadMode;
+        nativeTouchFallbackToAbsolute = false;
 
-        // Cancel active gestures & block new touches until all fingers lift
+        // Cancel active gestures (both emulated and native touch) & block new touches until all fingers lift
         cancelAllTouches();
         twoFingerGestureActive = false;
         if (activeFingerCount > 0) {
@@ -3084,7 +3158,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Rebuild touch contexts live without reconnecting or rebuilding decoder
         rebuildTouchContexts();
 
-        // Toggle OSC availability (unavailable in touchscreen mode)
+        // Toggle OSC availability (only available in touchpad mode)
         if (!trackpadMode) {
             if (virtualController != null) {
                 virtualController.hide();
@@ -3093,10 +3167,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             ensureVirtualControllerVisible();
         }
 
-        PreferenceConfiguration.saveLiveStreamControls(this, trackpadMode, null, null);
+        PreferenceConfiguration.saveLiveStreamControls(this, touchMode, null, null);
         if (sidebarOverlay != null) {
             sidebarOverlay.updateControlState(
-                    prefConfig.touchscreenTrackpad,
+                    prefConfig.touchMode,
                     prefConfig.onscreenController,
                     prefConfig.enablePerfOverlay);
         }
@@ -3112,7 +3186,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if (sidebarOverlay != null) {
             sidebarOverlay.updateControlState(
-                    prefConfig.touchscreenTrackpad,
+                    prefConfig.touchMode,
                     prefConfig.onscreenController,
                     prefConfig.enablePerfOverlay);
         }
@@ -3138,7 +3212,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if (sidebarOverlay != null) {
             sidebarOverlay.updateControlState(
-                    prefConfig.touchscreenTrackpad,
+                    prefConfig.touchMode,
                     prefConfig.onscreenController,
                     prefConfig.enablePerfOverlay);
         }

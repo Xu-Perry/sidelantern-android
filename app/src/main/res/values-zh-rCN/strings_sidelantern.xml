@@ -65,6 +65,10 @@
     <string name="sl_settings_custom">自定义</string>
     <string name="sl_settings_touchpad">触控板</string>
     <string name="sl_settings_touchscreen">触摸屏</string>
+    <string name="sl_settings_touch_native">原生多点</string>
+    <string name="sl_settings_touch_native_full">原生多点触控</string>
+    <string name="sl_settings_touch_summary">选择屏幕触控控制远程电脑的方式（触控板、触摸屏或原生多点触控）。</string>
+    <string name="sl_touch_native_unsupported">当前主机不支持原生多点触控，已自动回退为触摸屏模式。</string>
     <string name="sl_settings_custom_resolution_title">输入自定义分辨率</string>
     <string name="sl_settings_custom_width_hint">宽度（例如 1920）</string>
     <string name="sl_settings_custom_height_hint">高度（例如 1080）</string>

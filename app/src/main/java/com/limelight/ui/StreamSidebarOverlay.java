@@ -21,6 +21,7 @@ import com.limelight.binding.input.KeyboardShortcut;
 import com.limelight.binding.input.KeyboardShortcutStore;
 import com.limelight.nvstream.ManualVideoController;
 import com.limelight.nvstream.http.ManualVideoSettings;
+import com.limelight.preferences.PreferenceConfiguration;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,7 +45,7 @@ public class StreamSidebarOverlay extends FrameLayout {
         void onResolutionSelected(int width, int height);
         void onFrameRateSelected(int fps);
         void onBitrateCommitted(int bitrateBudgetKbps);
-        void onTouchModeChanged(boolean trackpadMode);
+        void onTouchModeChanged(int touchMode);
         void onOnScreenControlsChanged(boolean enabled);
         void onStatisticsOverlayChanged(boolean enabled);
         void onTriggerShortcut(KeyboardShortcut shortcut);
@@ -110,7 +111,7 @@ public class StreamSidebarOverlay extends FrameLayout {
     private int currentHeight = 1080;
     private int currentFps = 60;
     private int currentBitrateBudgetKbps = 20000;
-    private boolean trackpadMode = true;
+    private int touchMode = PreferenceConfiguration.TOUCH_MODE_TRACKPAD;
     private boolean oscEnabled = false;
     private boolean statsEnabled = false;
     private boolean updatingSeekBar = false;
@@ -451,8 +452,8 @@ public class StreamSidebarOverlay extends FrameLayout {
         }
     }
 
-    public void updateControlState(boolean trackpad, boolean osc, boolean stats) {
-        this.trackpadMode = trackpad;
+    public void updateControlState(int touchMode, boolean osc, boolean stats) {
+        this.touchMode = touchMode;
         this.oscEnabled = osc;
         this.statsEnabled = stats;
         rebuildControlToggles();
@@ -595,27 +596,28 @@ public class StreamSidebarOverlay extends FrameLayout {
     }
 
     private void rebuildControlToggles() {
-        // Touch mode
+        // Touch mode: Touchpad | Touchscreen | Native Multi-Touch
         touchModeRow.removeAllViews();
-        TextView padChip = makeOptionChip(getContext().getString(R.string.sl_settings_touchpad), trackpadMode);
-        padChip.setOnClickListener(v -> {
-            if (!trackpadMode && callbacks != null) {
-                callbacks.onTouchModeChanged(true);
-            }
-        });
-        TextView screenChip = makeOptionChip(getContext().getString(R.string.sl_settings_touchscreen), !trackpadMode);
-        screenChip.setOnClickListener(v -> {
-            if (trackpadMode && callbacks != null) {
-                callbacks.onTouchModeChanged(false);
-            }
-        });
-        touchModeRow.addView(padChip, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        LinearLayout.LayoutParams spLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        spLp.leftMargin = dp(6);
-        touchModeRow.addView(screenChip, spLp);
+        int[][] modes = new int[][]{
+                {PreferenceConfiguration.TOUCH_MODE_TRACKPAD, R.string.sl_settings_touchpad},
+                {PreferenceConfiguration.TOUCH_MODE_TOUCHSCREEN, R.string.sl_settings_touchscreen},
+                {PreferenceConfiguration.TOUCH_MODE_NATIVE, R.string.sl_settings_touch_native}
+        };
+        for (int i = 0; i < modes.length; i++) {
+            final int modeVal = modes[i][0];
+            TextView chip = makeOptionChip(getContext().getString(modes[i][1]), touchMode == modeVal);
+            chip.setOnClickListener(v -> {
+                if (touchMode != modeVal && callbacks != null) {
+                    callbacks.onTouchModeChanged(modeVal);
+                }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) lp.leftMargin = dp(6);
+            touchModeRow.addView(chip, lp);
+        }
 
         // OSC (visible ONLY in touchpad mode)
-        oscGroup.setVisibility(trackpadMode ? VISIBLE : GONE);
+        oscGroup.setVisibility(touchMode == PreferenceConfiguration.TOUCH_MODE_TRACKPAD ? VISIBLE : GONE);
         oscRow.removeAllViews();
         TextView oscOff = makeOptionChip(getContext().getString(R.string.sl_settings_off), !oscEnabled);
         oscOff.setOnClickListener(v -> {

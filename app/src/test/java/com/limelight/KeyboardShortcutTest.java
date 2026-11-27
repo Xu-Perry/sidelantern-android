@@ -112,4 +112,25 @@ public class KeyboardShortcutTest {
         NvApp cnDesktop = new NvApp("远程桌面", 9, false);
         assertEquals(9, DeviceBrowserPrefs.selectDesktopApp(null, Arrays.asList(steam, cnDesktop)).getAppId());
     }
+
+    @Test
+    public void touchModePrefRoundTripsAndDefaultsToTrackpad() {
+        assertEquals(com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_TRACKPAD,
+                com.limelight.preferences.PreferenceConfiguration.parseTouchMode("trackpad"));
+        assertEquals(com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_TOUCHSCREEN,
+                com.limelight.preferences.PreferenceConfiguration.parseTouchMode("touchscreen"));
+        assertEquals(com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_NATIVE,
+                com.limelight.preferences.PreferenceConfiguration.parseTouchMode("native"));
+        assertEquals(com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_TRACKPAD,
+                com.limelight.preferences.PreferenceConfiguration.parseTouchMode("unknown"));
+        assertEquals(com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_TRACKPAD,
+                com.limelight.preferences.PreferenceConfiguration.parseTouchMode(null));
+
+        assertEquals("trackpad", com.limelight.preferences.PreferenceConfiguration.touchModeToPrefValue(
+                com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_TRACKPAD));
+        assertEquals("touchscreen", com.limelight.preferences.PreferenceConfiguration.touchModeToPrefValue(
+                com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_TOUCHSCREEN));
+        assertEquals("native", com.limelight.preferences.PreferenceConfiguration.touchModeToPrefValue(
+                com.limelight.preferences.PreferenceConfiguration.TOUCH_MODE_NATIVE));
+    }
 }

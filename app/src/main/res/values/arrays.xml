@@ -137,4 +137,15 @@
         <item>right</item>
         <item>left</item>
     </string-array>
+
+    <string-array name="touch_mode_names">
+        <item>@string/sl_settings_touchpad</item>
+        <item>@string/sl_settings_touchscreen</item>
+        <item>@string/sl_settings_touch_native_full</item>
+    </string-array>
+    <string-array name="touch_mode_values" translatable="false">
+        <item>trackpad</item>
+        <item>touchscreen</item>
+        <item>native</item>
+    </string-array>
 </resources>
