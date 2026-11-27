@@ -1,35 +1,73 @@
-# Moonlight Android
+# SideLantern Android
 
-[![AppVeyor Build Status](https://ci.appveyor.com/api/projects/status/232a8tadrrn8jv0k/branch/master?svg=true)](https://ci.appveyor.com/project/cgutman/moonlight-android/branch/master)
-[![Translation Status](https://hosted.weblate.org/widgets/moonlight/-/moonlight-android/svg-badge.svg)](https://hosted.weblate.org/projects/moonlight/moonlight-android/)
+**SideLantern for Android** is a customized Android streaming client based on [Moonlight Android](https://github.com/moonlight-stream/moonlight-android), designed to pair seamlessly with the **SideLantern** host as well as standard [Sunshine](https://github.com/LizardByte/Sunshine) and GameStream hosts.
 
-[Moonlight for Android](https://moonlight-stream.org) is an open source client for NVIDIA GameStream and [Sunshine](https://github.com/LizardByte/Sunshine).
+Turn your Android phone or tablet into a low-latency remote desktop, secondary display, or wireless extended screen.
 
-Moonlight for Android will allow you to stream your full collection of games from your Windows PC to your Android device,
-whether in your own home or over the internet.
+## Features
 
-Moonlight also has a [PC client](https://github.com/moonlight-stream/moonlight-qt) and [iOS/tvOS client](https://github.com/moonlight-stream/moonlight-ios).
+### Display Modes & Session Management
+- **Primary / Secondary / Wireless Extended Display**: Queries `GET /sidelantern/v1/stream-modes` before connecting to support **Enter Desktop** (`primary`), **Secondary Display Only** (`secondary`), and **Wireless Extended Display** (`extend`), with automatic legacy-host fallback for primary display.
+- **Seamless Session Resume**: Desktop and display-mode shortcuts connect directly and resume active sessions without interrupting running host applications.
+- **Real Client Device Name**: Sends the device's actual name (RFC 3986 percent-encoded) during pairing instead of a generic placeholder.
 
-You can follow development on our [Discord server](https://moonlight-stream.org/discord) and help translate Moonlight into your language on [Weblate](https://hosted.weblate.org/projects/moonlight/moonlight-android/).
+### Live In-Stream Controls
+- **Manual Video Hot-Switching** (`/sidelantern/v1/manual-video`): Adjust **Resolution** (360p–4K and custom resolutions), **Frame Rate** (30 / 60 / 90 / 120 FPS), and **Bitrate** (0.5–150 Mbps) live without reconnecting.
+- **3 Touch Modes with Live Hot-Switching**:
+  - **Touchpad**: Relative trackpad cursor, 2-finger scroll/right-click, and optional on-screen gamepad controls.
+  - **Touchscreen**: Direct absolute touch with local 2-finger pinch-zoom and pan.
+  - **Native Multi-Touch**: Passes full multi-finger touch events directly to Windows via Moonlight/Sunshine's native touch protocol (with automatic fallback on unsupported hosts).
+- **Floating Settings Button & Right-Edge Sidebar**: Draggable edge-snapping gear button with idle dimming, right-edge sidebar for live stream controls, statistics overlay toggle, keyboard toggle, and one-tap **Exit Stream** (disconnects without quitting the host app).
+- **Portrait & Landscape Streaming**: Freely rotate between portrait and landscape without disconnecting.
 
-## Downloads
-* [Google Play Store](https://play.google.com/store/apps/details?id=com.limelight)
-* [Amazon App Store](https://www.amazon.com/gp/product/B00JK4MFN2)
-* [F-Droid](https://f-droid.org/packages/com.limelight)
-* [APK](https://github.com/moonlight-stream/moonlight-android/releases)
+### Streaming Keyboard & Custom Shortcuts
+- **Docked Shortcut Bar**: Horizontal scrollable toolbar above the soft keyboard with lockable `Win` / `Ctrl` / `Alt` / `Shift` modifiers, `Esc` / `Tab` / `Del`, shortcuts, and a quick hide-keyboard button.
+- **Built-In & Custom Shortcuts**: Includes 8 common desktop shortcuts plus an in-sidebar editor to create, edit, and delete custom key combinations.
+
+### Bidirectional File Transfer
+- **Host File Transfer** (`/sidelantern/v1/files`): Send photos, videos, and files to your PC, or browse shared folders on your PC and download files directly to Android.
+- **Resilient Chunked Queue**: Certificate-pinned HTTPS with disk-backed chunking, pause/resume/cancel, automatic offset recovery, and persistent task history across restarts.
+
+### Redesigned Device Browser
+- **Modern Device List & Detail UI**: Collapsible Online / Connecting / Offline groups, responsive 2-column tablet layout, manual LAN/WAN/IPv6/custom-port entry, desktop app auto-detection/picker, and per-host quick-launch management.
+- **Localization**: Full English and Simplified Chinese (`zh-CN`) support.
 
 ## Building
-* Install Android Studio and the Android NDK
-* Run ‘git submodule update --init --recursive’ from within moonlight-android/
-* In moonlight-android/, create a file called ‘local.properties’. Add an ‘ndk.dir=’ property to the local.properties file and set it equal to your NDK directory.
-* Build the APK using Android Studio or gradle
 
-## Authors
+### Prerequisites
+- JDK 17+ (or Android Studio JBR)
+- Android SDK (API 37) and Android NDK (`29.0.14206865`)
 
-* [Cameron Gutman](https://github.com/cgutman)  
-* [Diego Waxemberg](https://github.com/dwaxemberg)  
-* [Aaron Neyer](https://github.com/Aaronneyer)  
-* [Andrew Hennessy](https://github.com/yetanothername)
+### Steps
+1. Clone the repository with submodules:
+   ```bash
+   git clone --recursive https://github.com/Xu-Perry/sidelantern-android.git
+   cd sidelantern-android
+   ```
+   If already cloned without `--recursive`:
+   ```bash
+   git submodule update --init --recursive
+   ```
+2. Run unit tests:
+   ```bash
+   ./gradlew testNonRootDebugUnitTest
+   ```
+3. Build APKs:
+   - **Debug** (`com.sidelantern.debug`):
+     ```bash
+     ./gradlew assembleNonRootDebug
+     ```
+   - **Release** (`com.sidelantern`):
+     ```bash
+     ./gradlew assembleNonRootRelease
+     ```
 
-Moonlight is the work of students at [Case Western](http://case.edu) and was
-started as a project at [MHacks](http://mhacks.org).
+## Upstream & License
+
+SideLantern Android is derived from [Moonlight Android](https://github.com/moonlight-stream/moonlight-android) and is licensed under the **GNU General Public License v3.0** (see [LICENSE.txt](LICENSE.txt)).
+
+Upstream Moonlight Android authors:
+- [Cameron Gutman](https://github.com/cgutman)
+- [Diego Waxemberg](https://github.com/dwaxemberg)
+- [Aaron Neyer](https://github.com/Aaronneyer)
+- [Andrew Hennessy](https://github.com/yetanothername)
