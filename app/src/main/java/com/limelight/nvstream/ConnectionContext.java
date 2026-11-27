@@ -31,4 +31,7 @@ public class ConnectionContext {
     public int negotiatedPacketSize;
 
     public int videoCapabilities;
+
+    public String effectiveSideLanternMode;
+    public boolean manualVideoEnabled;
 }

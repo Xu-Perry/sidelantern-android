@@ -29,6 +29,7 @@ import javax.crypto.SecretKey;
 import org.xmlpull.v1.XmlPullParserException;
 
 import com.limelight.LimeLog;
+import com.limelight.R;
 import com.limelight.nvstream.av.audio.AudioRenderer;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.http.ComputerDetails;
@@ -37,6 +38,7 @@ import com.limelight.nvstream.http.LimelightCryptoProvider;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
 import com.limelight.nvstream.http.PairingManager;
+import com.limelight.nvstream.http.StreamModesResponse;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
 
@@ -66,6 +68,14 @@ public class NvConnection {
         this.context.riKeyId = generateRiKeyId();
 
         this.isMonkey = ActivityManager.isUserAMonkey();
+    }
+
+    public boolean isManualVideoEnabled() {
+        return context.manualVideoEnabled;
+    }
+
+    public int getHttpsPort() {
+        return context.httpsPort;
     }
     
     private static SecretKey generateRiAesKey() {
@@ -233,6 +243,9 @@ public class NvConnection {
 
         ComputerDetails details = h.getComputerDetails(serverInfo);
         context.isNvidiaServerSoftware = details.nvidiaServer;
+        if (context.httpsPort == 0 && details.httpsPort != 0) {
+            context.httpsPort = details.httpsPort;
+        }
 
         // May be missing for older servers
         context.serverGfeVersion = h.getGfeVersion(serverInfo);
@@ -240,6 +253,32 @@ public class NvConnection {
         if (h.getPairState(serverInfo) != PairingManager.PairState.PAIRED) {
             context.connListener.displayMessage("Device not paired with computer");
             return false;
+        }
+
+        String requestedMode = context.streamConfig.getSideLanternMode();
+        context.effectiveSideLanternMode = null;
+        context.manualVideoEnabled = false;
+        if (requestedMode != null) {
+            StreamModesResponse modes = h.getStreamModes();
+            if (!modes.supportsDisplayModes()) {
+                if (modes.isLegacyHost() && StreamModesResponse.MODE_PRIMARY.equals(requestedMode)) {
+                    // Preserve normal GameStream on hosts without explicit display selection.
+                    context.effectiveSideLanternMode = null;
+                } else {
+                    int msgRes = modes.isLegacyHost()
+                            ? R.string.sl_target_legacy
+                            : R.string.sl_target_error_discovery;
+                    context.connListener.displayMessage(appContext.getString(msgRes));
+                    return false;
+                }
+            } else if (!modes.isModeAvailable(requestedMode)) {
+                context.connListener.displayMessage(
+                        StreamModesResponse.getFailureMessage(appContext, modes.reasonForMode(requestedMode)));
+                return false;
+            } else {
+                context.effectiveSideLanternMode = requestedMode;
+                context.manualVideoEnabled = modes.supportsManualVideo();
+            }
         }
 
         context.serverCodecModeSupport = (int)h.getServerCodecModeSupport(serverInfo);
@@ -310,7 +349,7 @@ public class NvConnection {
         // If there's a game running, resume it
         if (h.getCurrentGame(serverInfo) != 0) {
             try {
-                if (h.getCurrentGame(serverInfo) == app.getAppId()) {
+                if (h.getCurrentGame(serverInfo) == app.getAppId() || context.streamConfig.getResumeAnyRunningSession()) {
                     if (!h.launchApp(context, "resume", app.getAppId(), context.negotiatedHdr)) {
                         context.connListener.displayMessage("Failed to resume existing session");
                         return false;
@@ -398,7 +437,10 @@ public class NvConnection {
                     context.connListener.stageComplete(appName);
                 } catch (HostHttpResponseException e) {
                     e.printStackTrace();
-                    context.connListener.displayMessage(e.getMessage());
+                    String errorMessage = e.getSideLanternReason() != null
+                            ? StreamModesResponse.getFailureMessage(appContext, e.getSideLanternReason())
+                            : e.getMessage();
+                    context.connListener.displayMessage(errorMessage);
                     context.connListener.stageFailed(appName, 0, e.getErrorCode());
                     return;
                 } catch (XmlPullParserException | IOException e) {

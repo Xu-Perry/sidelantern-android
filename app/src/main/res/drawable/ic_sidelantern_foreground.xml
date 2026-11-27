@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- SideLantern mark scaled into the 72x72 adaptive icon safe zone (18..90) -->
+    <group
+        android:translateX="18"
+        android:translateY="18"
+        android:scaleX="2.25"
+        android:scaleY="2.25">
+        <!-- Top cap: x=13..19, y=7..11 -->
+        <path
+            android:fillColor="#EBFAE9"
+            android:pathData="M13,7 L19,7 L19,11 L13,11 Z" />
+        <!-- Lantern hollow body: outer x=10..22, y=11..21; inner x=13..19, y=13..19 -->
+        <path
+            android:fillColor="#EBFAE9"
+            android:fillType="evenOdd"
+            android:pathData="M10,11 L22,11 L22,21 L10,21 Z M13,13 L19,13 L19,19 L13,19 Z" />
+        <!-- Bottom base: x=9..23, y=22..25 -->
+        <path
+            android:fillColor="#EBFAE9"
+            android:pathData="M9,22 L23,22 L23,25 L9,25 Z" />
+    </group>
+</vector>

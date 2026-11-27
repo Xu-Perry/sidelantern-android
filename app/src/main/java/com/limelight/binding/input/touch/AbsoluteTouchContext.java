@@ -222,15 +222,19 @@ public class AbsoluteTouchContext implements TouchContext {
     public void cancelTouch() {
         cancelled = true;
 
-        // Cancel the timers
+        // Cancel all pending timers including delayed button releases
         cancelLongPressTimer();
         cancelTapDownTimer();
+        handler.removeCallbacks(leftButtonUpRunnable);
 
-        // Raise the mouse buttons
+        // Raise any mouse buttons currently held down and clear flags so we never double-release
         if (confirmedLongPress) {
+            confirmedLongPress = false;
+            confirmedTap = false;
             conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
         }
         else if (confirmedTap) {
+            confirmedTap = false;
             conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
         }
     }

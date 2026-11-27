@@ -604,4 +604,34 @@ public class PreferenceConfiguration {
 
         return config;
     }
+
+    public static void saveLiveVideoSettings(Context context, Integer width, Integer height, Integer fps, Integer bitrateKbps) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        SharedPreferences.Editor editor = prefs.edit();
+        if (width != null && height != null && width > 0 && height > 0) {
+            editor.putString(RESOLUTION_PREF_STRING, width + "x" + height);
+        }
+        if (fps != null && fps > 0) {
+            editor.putString(FPS_PREF_STRING, Integer.toString(fps));
+        }
+        if (bitrateKbps != null && bitrateKbps > 0) {
+            editor.putInt(BITRATE_PREF_STRING, bitrateKbps);
+        }
+        editor.apply();
+    }
+
+    public static void saveLiveStreamControls(Context context, Boolean touchscreenTrackpad, Boolean onscreenController, Boolean enablePerfOverlay) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        SharedPreferences.Editor editor = prefs.edit();
+        if (touchscreenTrackpad != null) {
+            editor.putBoolean(TOUCHSCREEN_TRACKPAD_PREF_STRING, touchscreenTrackpad);
+        }
+        if (onscreenController != null) {
+            editor.putBoolean(ONSCREEN_CONTROLLER_PREF_STRING, onscreenController);
+        }
+        if (enablePerfOverlay != null) {
+            editor.putBoolean(ENABLE_PERF_OVERLAY_STRING, enablePerfOverlay);
+        }
+        editor.apply();
+    }
 }

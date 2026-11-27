@@ -35,6 +35,12 @@ public class DiscoveryService extends Service {
         public List<MdnsComputer> getComputerSet() {
             return discoveryAgent.getComputerSet();
         }
+
+        public void refreshDiscovery(int queryIntervalMs) {
+            discoveryAgent.stopDiscovery();
+            discoveryAgent.clearComputers();
+            discoveryAgent.startDiscovery(queryIntervalMs);
+        }
     }
 
     @Override

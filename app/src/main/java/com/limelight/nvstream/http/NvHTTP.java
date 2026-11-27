@@ -51,6 +51,7 @@ import com.limelight.LimeLog;
 import com.limelight.nvstream.ConnectionContext;
 import com.limelight.nvstream.http.PairingManager.PairState;
 import com.limelight.nvstream.jni.MoonBridge;
+import com.limelight.utils.DeviceNameHelper;
 
 import okhttp3.ConnectionPool;
 import okhttp3.HttpUrl;
@@ -410,6 +411,71 @@ public class NvHTTP {
         }
     }
 
+    /**
+     * Creates an OkHttpClient configured with this host's pinned server certificate
+     * and client mutual-TLS certificate for SideLantern HTTPS API endpoints.
+     */
+    public OkHttpClient createPairedHttpsClient(int timeoutSeconds, boolean followRedirects) {
+        OkHttpClient base = httpClientLongConnectTimeout.newBuilder()
+                .connectTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .readTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .writeTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .followRedirects(followRedirects)
+                .followSslRedirects(followRedirects)
+                .build();
+        return performAndroidTlsHack(base);
+    }
+
+    public boolean hasPinnedServerCert() {
+        return serverCert != null;
+    }
+
+    public StreamModesResponse getStreamModes() {
+        if (serverCert == null) {
+            return new StreamModesResponse(0, null);
+        }
+        try {
+            HttpUrl httpsBase = getHttpsUrl(true);
+            HttpUrl url = httpsBase.newBuilder()
+                    .addPathSegments("sidelantern/v1/stream-modes")
+                    .build();
+            Request request = new Request.Builder()
+                    .url(url)
+                    .get()
+                    .header("Cache-Control", "no-store")
+                    .build();
+            try (Response response = createPairedHttpsClient(10, false).newCall(request).execute()) {
+                ResponseBody body = response.body();
+                String xml = body != null ? body.string() : null;
+                return new StreamModesResponse(response.code(), xml);
+            }
+        } catch (IOException e) {
+            LimeLog.warning("Failed to query /sidelantern/v1/stream-modes: " + e.getMessage());
+            return new StreamModesResponse(0, null);
+        }
+    }
+
+    public ManualVideoSettings.Response executeManualVideoRequest(String sessionIdentifier, ManualVideoSettings settings) {
+        if (serverCert == null) {
+            return new ManualVideoSettings.Response(0, null);
+        }
+        try {
+            HttpUrl httpsBase = getHttpsUrl(true);
+            Request request = ManualVideoSettings.buildRequest(httpsBase, sessionIdentifier, settings);
+            if (request == null) {
+                return new ManualVideoSettings.Response(0, null);
+            }
+            try (Response response = createPairedHttpsClient(10, false).newCall(request).execute()) {
+                ResponseBody body = response.body();
+                String xml = body != null ? body.string() : null;
+                return new ManualVideoSettings.Response(response.code(), xml);
+            }
+        } catch (IOException e) {
+            LimeLog.warning("Manual video request failed: " + e.getMessage());
+            return new ManualVideoSettings.Response(0, null);
+        }
+    }
+
     private HttpUrl getCompleteUrl(HttpUrl baseUrl, String path, String query) {
         return baseUrl.newBuilder()
                 .addPathSegment(path)
@@ -706,12 +772,12 @@ public class NvHTTP {
 
     String executePairingCommand(String additionalArguments, boolean enableReadTimeout) throws HostHttpResponseException, IOException {
         return openHttpConnectionToString(enableReadTimeout ? httpClientLongConnectTimeout : httpClientLongConnectNoReadTimeout,
-                baseUrlHttp, "pair", "devicename=roth&updateState=1&" + additionalArguments);
+                baseUrlHttp, "pair", "devicename=" + DeviceNameHelper.getEncodedDeviceName() + "&updateState=1&" + additionalArguments);
     }
 
     String executePairingChallenge() throws HostHttpResponseException, IOException {
         return openHttpConnectionToString(httpClientLongConnectTimeout, getHttpsUrl(true),
-                "pair", "devicename=roth&updateState=1&phrase=pairchallenge");
+                "pair", "devicename=" + DeviceNameHelper.getEncodedDeviceName() + "&updateState=1&phrase=pairchallenge");
     }
 
     public void unpair() throws IOException {
@@ -777,28 +843,70 @@ public class NvHTTP {
             }
         }
 
-        String xmlStr = openHttpConnectionToString(httpClientLongConnectNoReadTimeout, getHttpsUrl(true), verb,
-            "appid=" + appId +
-            "&mode=" + context.negotiatedWidth + "x" + context.negotiatedHeight + "x" + fps +
-            "&additionalStates=1&sops=" + (enableSops ? 1 : 0) +
-            "&rikey="+bytesToHex(context.riKey.getEncoded()) +
-            "&rikeyid="+context.riKeyId +
-            (!enableHdr ? "" : "&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0") +
-            "&localAudioPlayMode=" + (context.streamConfig.getPlayLocalAudio() ? 1 : 0) +
-            "&surroundAudioInfo=" + context.streamConfig.getAudioConfiguration().getSurroundAudioInfo() +
-            "&remoteControllersBitmap=" + context.streamConfig.getAttachedGamepadMask() +
-            "&gcmap=" + context.streamConfig.getAttachedGamepadMask() +
-            "&gcpersist="+(context.streamConfig.getPersistGamepadsAfterDisconnect() ? 1 : 0) +
-            MoonBridge.getLaunchUrlQueryParameters());
-        if ((verb.equals("launch") && !getXmlString(xmlStr, "gamesession", true).equals("0") ||
-                (verb.equals("resume") && !getXmlString(xmlStr, "resume", true).equals("0")))) {
-            // sessionUrl0 will be missing for older GFE versions
-            context.rtspSessionUrl = getXmlString(xmlStr, "sessionUrl0", false);
-            return true;
+        StringBuilder query = new StringBuilder();
+        query.append("appid=").append(appId)
+                .append("&mode=").append(context.negotiatedWidth).append("x").append(context.negotiatedHeight).append("x").append(fps)
+                .append("&additionalStates=1&sops=").append(enableSops ? 1 : 0)
+                .append("&rikey=").append(bytesToHex(context.riKey.getEncoded()))
+                .append("&rikeyid=").append(context.riKeyId)
+                .append(!enableHdr ? "" : "&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0")
+                .append("&localAudioPlayMode=").append(context.streamConfig.getPlayLocalAudio() ? 1 : 0)
+                .append("&surroundAudioInfo=").append(context.streamConfig.getAudioConfiguration().getSurroundAudioInfo())
+                .append("&remoteControllersBitmap=").append(context.streamConfig.getAttachedGamepadMask())
+                .append("&gcmap=").append(context.streamConfig.getAttachedGamepadMask())
+                .append("&gcpersist=").append(context.streamConfig.getPersistGamepadsAfterDisconnect() ? 1 : 0)
+                .append(MoonBridge.getLaunchUrlQueryParameters());
+        if (context.effectiveSideLanternMode != null) {
+            query.append("&sidelantern_mode=").append(DeviceNameHelper.percentEncodeQueryValue(context.effectiveSideLanternMode));
+            if (context.manualVideoEnabled) {
+                query.append("&sidelantern_manual_video=1");
+            }
         }
-        else {
-            return false;
+
+        String xmlStr = openHttpConnectionToString(httpClientLongConnectNoReadTimeout, getHttpsUrl(true), verb, query.toString());
+        try {
+            if ((verb.equals("launch") && !getXmlString(xmlStr, "gamesession", true).equals("0") ||
+                    (verb.equals("resume") && !getXmlString(xmlStr, "resume", true).equals("0")))) {
+                // sessionUrl0 will be missing for older GFE versions
+                context.rtspSessionUrl = getXmlString(xmlStr, "sessionUrl0", false);
+                return true;
+            }
+            else {
+                return false;
+            }
+        } catch (HostHttpResponseException e) {
+            String reason = extractXmlTagIgnoringStatus(xmlStr, "sidelantern_reason");
+            if (reason != null && !reason.isEmpty()) {
+                throw new HostHttpResponseException(e.getErrorCode(), e.getErrorMessage(), reason);
+            }
+            throw e;
         }
+    }
+
+    private static String extractXmlTagIgnoringStatus(String xmlStr, String tagName) {
+        if (xmlStr == null || xmlStr.isEmpty()) {
+            return null;
+        }
+        try {
+            XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
+            factory.setNamespaceAware(true);
+            XmlPullParser xpp = factory.newPullParser();
+            xpp.setInput(new StringReader(xmlStr));
+            int eventType = xpp.getEventType();
+            String currentTag = null;
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                if (eventType == XmlPullParser.START_TAG) {
+                    currentTag = xpp.getName();
+                } else if (eventType == XmlPullParser.END_TAG) {
+                    currentTag = null;
+                } else if (eventType == XmlPullParser.TEXT && tagName.equals(currentTag)) {
+                    return xpp.getText();
+                }
+                eventType = xpp.next();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
     
     public boolean quitApp() throws IOException, XmlPullParserException {

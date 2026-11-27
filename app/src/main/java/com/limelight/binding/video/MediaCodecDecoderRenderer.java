@@ -75,6 +75,21 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private String glRenderer;
     private boolean foreground = true;
     private PerfOverlayListener perfListener;
+    private VideoSizeListener videoSizeListener;
+
+    public interface VideoSizeListener {
+        void onVideoSizeChanged(int width, int height);
+    }
+
+    public void setVideoSizeListener(VideoSizeListener listener) {
+        this.videoSizeListener = listener;
+    }
+
+    public void updateFrameRate(int newRefreshRate) {
+        if (newRefreshRate > 0) {
+            this.refreshRate = newRefreshRate;
+        }
+    }
 
     private static final int CR_MAX_TRIES = 10;
     private static final int CR_RECOVERY_TYPE_NONE = 0;
@@ -450,10 +465,24 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             videoFormat.setInteger(MediaFormat.KEY_FRAME_RATE, refreshRate);
         }
 
-        // Populate keys for adaptive playback
+        // Populate keys for adaptive playback, leaving headroom for live resolution changes
         if (adaptivePlayback) {
-            videoFormat.setInteger(MediaFormat.KEY_MAX_WIDTH, initialWidth);
-            videoFormat.setInteger(MediaFormat.KEY_MAX_HEIGHT, initialHeight);
+            int maxW = Math.max(initialWidth, 3840);
+            int maxH = Math.max(initialHeight, 2160);
+            try {
+                MediaCodecInfo info = "video/hevc".equals(mimeType) ? hevcDecoder
+                        : "video/av01".equals(mimeType) ? av1Decoder : avcDecoder;
+                if (info != null) {
+                    MediaCodecInfo.VideoCapabilities caps = info.getCapabilitiesForType(mimeType).getVideoCapabilities();
+                    if (caps != null) {
+                        maxW = Math.max(initialWidth, Math.min(maxW, caps.getSupportedWidths().getUpper()));
+                        maxH = Math.max(initialHeight, Math.min(maxH, caps.getSupportedHeights().getUpper()));
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            videoFormat.setInteger(MediaFormat.KEY_MAX_WIDTH, maxW);
+            videoFormat.setInteger(MediaFormat.KEY_MAX_HEIGHT, maxH);
         }
 
         // Android 7.0 adds color options to the MediaFormat
@@ -1011,6 +1040,30 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         });
     }
 
+    private void handleOutputFormatChanged(MediaFormat format) {
+        if (format == null) {
+            return;
+        }
+        int newWidth = 0;
+        int newHeight = 0;
+        if (format.containsKey("crop-right") && format.containsKey("crop-left")
+                && format.containsKey("crop-bottom") && format.containsKey("crop-top")) {
+            newWidth = format.getInteger("crop-right") - format.getInteger("crop-left") + 1;
+            newHeight = format.getInteger("crop-bottom") - format.getInteger("crop-top") + 1;
+        } else if (format.containsKey(MediaFormat.KEY_WIDTH) && format.containsKey(MediaFormat.KEY_HEIGHT)) {
+            newWidth = format.getInteger(MediaFormat.KEY_WIDTH);
+            newHeight = format.getInteger(MediaFormat.KEY_HEIGHT);
+        }
+        if (newWidth > 0 && newHeight > 0 && (newWidth != initialWidth || newHeight != initialHeight)) {
+            initialWidth = newWidth;
+            initialHeight = newHeight;
+            VideoSizeListener listener = this.videoSizeListener;
+            if (listener != null) {
+                listener.onVideoSizeChanged(newWidth, newHeight);
+            }
+        }
+    }
+
     private void startRendererThread()
     {
         rendererThread = new Thread() {
@@ -1092,6 +1145,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                     LimeLog.info("Output format changed");
                                     outputFormat = videoDecoder.getOutputFormat();
                                     LimeLog.info("New output format: " + outputFormat);
+                                    handleOutputFormatChanged(outputFormat);
                                     break;
                                 default:
                                     break;

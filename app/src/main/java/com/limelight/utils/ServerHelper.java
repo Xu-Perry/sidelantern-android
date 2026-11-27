@@ -14,6 +14,7 @@ import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.HostHttpResponseException;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
+import com.limelight.nvstream.http.StreamModesResponse;
 import com.limelight.nvstream.jni.MoonBridge;
 
 import org.xmlpull.v1.XmlPullParserException;
@@ -54,6 +55,12 @@ public class ServerHelper {
 
     public static Intent createStartIntent(Activity parent, NvApp app, ComputerDetails computer,
                                            ComputerManagerService.ComputerManagerBinder managerBinder) {
+        return createStartIntent(parent, app, computer, managerBinder, StreamModesResponse.MODE_PRIMARY, false);
+    }
+
+    public static Intent createStartIntent(Activity parent, NvApp app, ComputerDetails computer,
+                                           ComputerManagerService.ComputerManagerBinder managerBinder,
+                                           String sideLanternMode, boolean resumeAnyRunningSession) {
         Intent intent = new Intent(parent, Game.class);
         intent.putExtra(Game.EXTRA_HOST, computer.activeAddress.address);
         intent.putExtra(Game.EXTRA_PORT, computer.activeAddress.port);
@@ -64,6 +71,10 @@ public class ServerHelper {
         intent.putExtra(Game.EXTRA_UNIQUEID, managerBinder.getUniqueId());
         intent.putExtra(Game.EXTRA_PC_UUID, computer.uuid);
         intent.putExtra(Game.EXTRA_PC_NAME, computer.name);
+        if (sideLanternMode != null) {
+            intent.putExtra(Game.EXTRA_SIDELANTERN_MODE, sideLanternMode);
+        }
+        intent.putExtra(Game.EXTRA_RESUME_ANY_SESSION, resumeAnyRunningSession);
         try {
             if (computer.serverCert != null) {
                 intent.putExtra(Game.EXTRA_SERVER_CERT, computer.serverCert.getEncoded());
@@ -76,11 +87,17 @@ public class ServerHelper {
 
     public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
                                ComputerManagerService.ComputerManagerBinder managerBinder) {
+        doStart(parent, app, computer, managerBinder, StreamModesResponse.MODE_PRIMARY, false);
+    }
+
+    public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
+                               ComputerManagerService.ComputerManagerBinder managerBinder,
+                               String sideLanternMode, boolean resumeAnyRunningSession) {
         if (computer.state == ComputerDetails.State.OFFLINE || computer.activeAddress == null) {
             Toast.makeText(parent, parent.getResources().getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
             return;
         }
-        parent.startActivity(createStartIntent(parent, app, computer, managerBinder));
+        parent.startActivity(createStartIntent(parent, app, computer, managerBinder, sideLanternMode, resumeAnyRunningSession));
     }
 
     public static void doNetworkTest(final Activity parent) {

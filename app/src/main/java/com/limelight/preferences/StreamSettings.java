@@ -521,31 +521,7 @@ public class StreamSettings extends Activity {
                 addNativeResolutionEntries(width, height, false);
             }
 
-            if (!PreferenceConfiguration.readPreferences(this.getActivity()).unlockFps) {
-                // We give some extra room in case the FPS is rounded down
-                if (maxSupportedFps < 118) {
-                    removeValue(PreferenceConfiguration.FPS_PREF_STRING, "120", new Runnable() {
-                        @Override
-                        public void run() {
-                            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(SettingsFragment.this.getActivity());
-                            setValue(PreferenceConfiguration.FPS_PREF_STRING, "90");
-                            resetBitrateToDefault(prefs, null, null);
-                        }
-                    });
-                }
-                if (maxSupportedFps < 88) {
-                    // 1080p is unsupported
-                    removeValue(PreferenceConfiguration.FPS_PREF_STRING, "90", new Runnable() {
-                        @Override
-                        public void run() {
-                            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(SettingsFragment.this.getActivity());
-                            setValue(PreferenceConfiguration.FPS_PREF_STRING, "60");
-                            resetBitrateToDefault(prefs, null, null);
-                        }
-                    });
-                }
-                // Never remove 30 FPS or 60 FPS
-            }
+            // SideLantern keeps 30/60/90/120 FPS selectable regardless of local display refresh rate
             addNativeFrameRateEntry(maxSupportedFps);
 
             // Android L introduces the drop duplicate behavior of releaseOutputBuffer()

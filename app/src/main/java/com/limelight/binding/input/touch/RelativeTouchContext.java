@@ -306,13 +306,19 @@ public class RelativeTouchContext implements TouchContext {
     public void cancelTouch() {
         cancelled = true;
 
-        // Cancel the drag timer
+        // Cancel drag timer and any delayed button-up callbacks
         cancelDragTimer();
+        for (Runnable r : buttonUpRunnables) {
+            handler.removeCallbacks(r);
+        }
 
-        // If it was a confirmed drag, we'll need to raise the button now
+        // If it was a confirmed drag, raise the button now and clear state
         if (confirmedDrag) {
+            confirmedDrag = false;
             conn.sendMouseButtonUp(getMouseButtonIndex());
         }
+        confirmedMove = false;
+        confirmedScroll = false;
     }
 
     @Override

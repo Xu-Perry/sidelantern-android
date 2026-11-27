@@ -4,6 +4,8 @@ package com.limelight;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.input.ControllerHandler;
+import com.limelight.binding.input.KeyboardShortcut;
+import com.limelight.binding.input.KeyboardShortcutStore;
 import com.limelight.binding.input.KeyboardTranslator;
 import com.limelight.binding.input.capture.InputCaptureManager;
 import com.limelight.binding.input.capture.InputCaptureProvider;
@@ -17,10 +19,12 @@ import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
+import com.limelight.nvstream.ManualVideoController;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.http.ComputerDetails;
+import com.limelight.nvstream.http.ManualVideoSettings;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
 import com.limelight.nvstream.input.ControllerPacket;
@@ -30,6 +34,11 @@ import com.limelight.nvstream.jni.MoonBridge;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.GameGestures;
+import com.limelight.ui.ImeProxyView;
+import com.limelight.ui.KeyboardShortcutBar;
+import com.limelight.ui.SideLanternTheme;
+import com.limelight.ui.StreamSettingsButton;
+import com.limelight.ui.StreamSidebarOverlay;
 import com.limelight.ui.StreamView;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
@@ -60,19 +69,25 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Rational;
 import android.view.Display;
+import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.View.OnGenericMotionListener;
 import android.view.View.OnSystemUiVisibilityChangeListener;
 import android.view.View.OnTouchListener;
+import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.view.inputmethod.InputMethodManager;
@@ -86,6 +101,8 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
@@ -180,6 +197,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_PC_NAME = "PcName";
     public static final String EXTRA_APP_HDR = "HDR";
     public static final String EXTRA_SERVER_CERT = "ServerCert";
+    public static final String EXTRA_SIDELANTERN_MODE = "SideLanternMode";
+    public static final String EXTRA_RESUME_ANY_SESSION = "ResumeAnySession";
+
+    // SideLantern connection metadata & live controls
+    private String hostAddress;
+    private int hostPort;
+    private String hostUniqueId;
+    private X509Certificate hostServerCert;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private ManualVideoController manualVideoController;
+    private ExecutorService manualVideoExecutor;
+
+    // SideLantern in-stream UI overlays
+    private FrameLayout rootOverlayContainer;
+    private StreamSettingsButton settingsButton;
+    private StreamSidebarOverlay sidebarOverlay;
+    private KeyboardShortcutStore shortcutStore;
+    private KeyboardShortcutBar keyboardShortcutBar;
+    private ImeProxyView imeProxyView;
+    private boolean softKeyboardVisible = false;
+    private int currentImeHeight = 0;
+    private int lockedBarModifiers = 0;
+
+    // SideLantern live touch mode switching & touchscreen pinch-zoom/pan
+    private boolean waitForAllFingersUp = false;
+    private int activeFingerCount = 0;
+    private ScaleGestureDetector scaleGestureDetector;
+    private float streamZoomScale = 1.0f;
+    private float streamPanX = 0f;
+    private float streamPanY = 0f;
+    private boolean twoFingerGestureActive = false;
+    private float lastTwoFingerFocusX = 0f;
+    private float lastTwoFingerFocusY = 0f;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -317,6 +367,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String uniqueId = Game.this.getIntent().getStringExtra(EXTRA_UNIQUEID);
         boolean appSupportsHdr = Game.this.getIntent().getBooleanExtra(EXTRA_APP_HDR, false);
         byte[] derCertData = Game.this.getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
+        String sideLanternMode = Game.this.getIntent().getStringExtra(EXTRA_SIDELANTERN_MODE);
+        boolean resumeAnySession = Game.this.getIntent().getBooleanExtra(EXTRA_RESUME_ANY_SESSION, false);
+
+        hostAddress = host;
+        hostPort = port;
+        hostUniqueId = uniqueId;
 
         app = new NvApp(appName != null ? appName : "app", appId, appSupportsHdr);
 
@@ -329,6 +385,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         } catch (CertificateException e) {
             e.printStackTrace();
         }
+        hostServerCert = serverCert;
 
         if (appId == StreamConfiguration.INVALID_APP_ID) {
             finish();
@@ -479,7 +536,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 .setColorSpace(decoderRenderer.getPreferredColorSpace())
                 .setColorRange(decoderRenderer.getPreferredColorRange())
                 .setPersistGamepadsAfterDisconnect(!prefConfig.multiController)
+                .setSideLanternMode(sideLanternMode)
+                .setResumeAnyRunningSession(resumeAnySession)
                 .build();
+
+        decoderRenderer.setVideoSizeListener((newWidth, newHeight) ->
+                runOnUiThread(() -> onDecoderVideoSizeChanged(newWidth, newHeight)));
 
         // Initialize the connection
         conn = new NvConnection(getApplicationContext(),
@@ -493,25 +555,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         inputManager.registerInputDeviceListener(keyboardTranslator, null);
 
         // Initialize touch contexts
-        for (int i = 0; i < touchContextMap.length; i++) {
-            if (!prefConfig.touchscreenTrackpad) {
-                touchContextMap[i] = new AbsoluteTouchContext(conn, i, streamView);
-            }
-            else {
-                touchContextMap[i] = new RelativeTouchContext(conn, i,
-                        REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
-                        streamView, prefConfig);
-            }
-        }
+        rebuildTouchContexts();
 
-        if (prefConfig.onscreenController) {
-            // create virtual onscreen controller
+        if (prefConfig.onscreenController && prefConfig.touchscreenTrackpad) {
+            // create virtual onscreen controller (touchpad mode only)
             virtualController = new VirtualController(controllerHandler,
                     (FrameLayout)streamView.getParent(),
                     this);
             virtualController.refreshLayout();
             virtualController.show();
         }
+
+        setupSideLanternOverlays();
 
         if (prefConfig.usbDriver) {
             // Start the USB driver
@@ -536,42 +591,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void setPreferredOrientationForCurrentDisplay() {
-        Display display = getWindowManager().getDefaultDisplay();
-
-        // For semi-square displays, we use more complex logic to determine which orientation to use (if any)
-        if (PreferenceConfiguration.isSquarishScreen(display)) {
-            int desiredOrientation = Configuration.ORIENTATION_UNDEFINED;
-
-            // OSC doesn't properly support portrait displays, so don't use it in portrait mode by default
-            if (prefConfig.onscreenController) {
-                desiredOrientation = Configuration.ORIENTATION_LANDSCAPE;
-            }
-
-            // For native resolution, we will lock the orientation to the one that matches the specified resolution
-            if (PreferenceConfiguration.isNativeResolution(prefConfig.width, prefConfig.height)) {
-                if (prefConfig.width > prefConfig.height) {
-                    desiredOrientation = Configuration.ORIENTATION_LANDSCAPE;
-                }
-                else {
-                    desiredOrientation = Configuration.ORIENTATION_PORTRAIT;
-                }
-            }
-
-            if (desiredOrientation == Configuration.ORIENTATION_LANDSCAPE) {
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
-            }
-            else if (desiredOrientation == Configuration.ORIENTATION_PORTRAIT) {
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT);
-            }
-            else {
-                // If we don't have a reason to lock to portrait or landscape, allow any orientation
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_USER);
-            }
-        }
-        else {
-            // For regular displays, we always request landscape
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
-        }
+        // SideLantern allows both portrait and landscape orientations during streaming
+        // without disconnecting when the user rotates the device.
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_USER);
     }
 
     @Override
@@ -581,9 +603,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Set requested orientation for possible new screen size
         setPreferredOrientationForCurrentDisplay();
 
+        resetStreamZoom();
+
         if (virtualController != null) {
             // Refresh layout of OSC for possible new screen size
             virtualController.refreshLayout();
+        }
+
+        if (sidebarOverlay != null) {
+            sidebarOverlay.post(sidebarOverlay::updatePanelWidth);
+        }
+        if (rootOverlayContainer != null) {
+            rootOverlayContainer.post(this::updateSettingsButtonBounds);
         }
 
         // Hide on-screen overlays in PiP mode
@@ -593,6 +624,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 if (virtualController != null) {
                     virtualController.hide();
+                }
+                if (settingsButton != null) {
+                    settingsButton.setVisibility(View.GONE);
+                }
+                if (sidebarOverlay != null) {
+                    sidebarOverlay.dismiss();
+                }
+                if (keyboardShortcutBar != null) {
+                    keyboardShortcutBar.setVisibility(View.GONE);
                 }
 
                 performanceOverlayView.setVisibility(View.GONE);
@@ -609,8 +649,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 // Restore overlays to previous state when leaving PiP
 
-                if (virtualController != null) {
+                if (virtualController != null && prefConfig.onscreenController && prefConfig.touchscreenTrackpad) {
                     virtualController.show();
+                }
+                if (settingsButton != null) {
+                    settingsButton.setVisibility(View.VISIBLE);
                 }
 
                 if (prefConfig.enablePerfOverlay) {
@@ -746,9 +789,27 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // lifted while focus was not on us. Clear the modifier state.
         this.modifierFlags = 0;
 
+        if (!hasFocus) {
+            cancelAllTouches();
+            releaseLockedModifiers();
+        }
+
         // With Android native pointer capture, capture is lost when focus is lost,
         // so it must be requested again when focus is regained.
         inputCaptureProvider.onWindowFocusChanged(hasFocus);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (sidebarOverlay != null && sidebarOverlay.isOpen()) {
+            sidebarOverlay.dismiss();
+            return;
+        }
+        if (softKeyboardVisible) {
+            hideSoftKeyboard();
+            return;
+        }
+        super.onBackPressed();
     }
 
     private boolean isRefreshRateEqualMatch(float refreshRate) {
@@ -1058,6 +1119,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Destroy the capture provider
         inputCaptureProvider.destroy();
+
+        if (manualVideoController != null) {
+            manualVideoController.cancel();
+            manualVideoController = null;
+        }
+        if (manualVideoExecutor != null) {
+            manualVideoExecutor.shutdownNow();
+            manualVideoExecutor = null;
+        }
     }
 
     @Override
@@ -1316,7 +1386,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private byte getModifierState() {
-        return (byte) modifierFlags;
+        return (byte) (modifierFlags | lockedBarModifiers);
     }
 
     @Override
@@ -1500,8 +1570,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void toggleKeyboard() {
         LimeLog.info("Toggling keyboard overlay");
-        InputMethodManager inputManager = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        inputManager.toggleSoftInput(0, 0);
+        if (softKeyboardVisible) {
+            hideSoftKeyboard();
+        } else {
+            showSoftKeyboard();
+        }
     }
 
     private byte getLiTouchTypeFromEvent(MotionEvent event) {
@@ -2000,53 +2073,87 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     return true;
                 }
 
-                // If this is the parent view, we'll offset our coordinates to appear as if they
-                // are relative to the StreamView like our StreamView touch events are.
-                float xOffset, yOffset;
-                if (view != streamView && !prefConfig.touchscreenTrackpad) {
-                    xOffset = -streamView.getX();
-                    yOffset = -streamView.getY();
+                if (sidebarOverlay != null && sidebarOverlay.isOpen()) {
+                    return true;
                 }
-                else {
-                    xOffset = 0.f;
-                    yOffset = 0.f;
+
+                int masked = event.getActionMasked();
+                if (masked == MotionEvent.ACTION_DOWN || masked == MotionEvent.ACTION_POINTER_DOWN) {
+                    activeFingerCount = event.getPointerCount();
+                } else if (masked == MotionEvent.ACTION_UP || masked == MotionEvent.ACTION_POINTER_UP) {
+                    activeFingerCount = Math.max(0, event.getPointerCount() - 1);
+                } else if (masked == MotionEvent.ACTION_CANCEL) {
+                    activeFingerCount = 0;
+                }
+
+                if (waitForAllFingersUp) {
+                    if ((masked == MotionEvent.ACTION_UP && event.getPointerCount() == 1)
+                            || masked == MotionEvent.ACTION_CANCEL) {
+                        waitForAllFingersUp = false;
+                        twoFingerGestureActive = false;
+                    }
+                    return true;
                 }
 
                 int actionIndex = event.getActionIndex();
 
-                int eventX = (int)(event.getX(actionIndex) + xOffset);
-                int eventY = (int)(event.getY(actionIndex) + yOffset);
-
                 // Special handling for 3 finger gesture
-                if (event.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN &&
+                if (masked == MotionEvent.ACTION_POINTER_DOWN &&
                         event.getPointerCount() == 3) {
                     // Three fingers down
                     threeFingerDownTime = event.getEventTime();
+                    twoFingerGestureActive = false;
 
                     // Cancel the first and second touches to avoid
                     // erroneous events
-                    for (TouchContext aTouchContext : touchContextMap) {
-                        aTouchContext.cancelTouch();
-                    }
+                    cancelAllTouches();
 
                     return true;
                 }
 
-                // TODO: Re-enable native touch when have a better solution for handling
-                // cancelled touches from Android gestures and 3 finger taps to activate
-                // the software keyboard.
-                /*if (!prefConfig.touchscreenTrackpad && trySendTouchEvent(view, event)) {
-                    // If this host supports touch events and absolute touch is enabled,
-                    // send it directly as a touch event.
-                    return true;
-                }*/
+                // Touchscreen mode: local 2-finger pinch-zoom and pan on StreamView
+                if (!prefConfig.touchscreenTrackpad) {
+                    if (event.getPointerCount() == 2) {
+                        if (!twoFingerGestureActive) {
+                            twoFingerGestureActive = true;
+                            cancelAllTouches();
+                            lastTwoFingerFocusX = (event.getX(0) + event.getX(1)) * 0.5f;
+                            lastTwoFingerFocusY = (event.getY(0) + event.getY(1)) * 0.5f;
+                        }
+                        if (scaleGestureDetector != null) {
+                            scaleGestureDetector.onTouchEvent(event);
+                        }
+                        if (masked == MotionEvent.ACTION_MOVE) {
+                            float fx = (event.getX(0) + event.getX(1)) * 0.5f;
+                            float fy = (event.getY(0) + event.getY(1)) * 0.5f;
+                            if (streamZoomScale > 1.0f) {
+                                streamPanX += (fx - lastTwoFingerFocusX);
+                                streamPanY += (fy - lastTwoFingerFocusY);
+                                applyStreamZoomAndPan();
+                            }
+                            lastTwoFingerFocusX = fx;
+                            lastTwoFingerFocusY = fy;
+                        }
+                        return true;
+                    } else if (twoFingerGestureActive) {
+                        if ((masked == MotionEvent.ACTION_UP && event.getPointerCount() == 1)
+                                || masked == MotionEvent.ACTION_CANCEL) {
+                            twoFingerGestureActive = false;
+                        }
+                        return true;
+                    }
+                }
+
+                int[] mapped = mapToStreamViewCoords(view, event.getX(actionIndex), event.getY(actionIndex));
+                int eventX = mapped[0];
+                int eventY = mapped[1];
 
                 TouchContext context = getTouchContext(actionIndex);
                 if (context == null) {
                     return false;
                 }
 
-                switch (event.getActionMasked())
+                switch (masked)
                 {
                 case MotionEvent.ACTION_POINTER_DOWN:
                 case MotionEvent.ACTION_DOWN:
@@ -2079,9 +2186,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
                     if (actionIndex == 0 && event.getPointerCount() > 1 && !context.isCancelled()) {
                         // The original secondary touch now becomes primary
+                        int[] nextMapped = mapToStreamViewCoords(view, event.getX(1), event.getY(1));
                         context.touchDownEvent(
-                                (int)(event.getX(1) + xOffset),
-                                (int)(event.getY(1) + yOffset),
+                                nextMapped[0],
+                                nextMapped[1],
                                 event.getEventTime(), false);
                     }
                     break;
@@ -2094,9 +2202,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         for (TouchContext aTouchContextMap : touchContextMap) {
                             if (aTouchContextMap.getActionIndex() < event.getPointerCount())
                             {
+                                int[] histMapped = mapToStreamViewCoords(
+                                        view,
+                                        event.getHistoricalX(aTouchContextMap.getActionIndex(), i),
+                                        event.getHistoricalY(aTouchContextMap.getActionIndex(), i));
                                 aTouchContextMap.touchMoveEvent(
-                                        (int)(event.getHistoricalX(aTouchContextMap.getActionIndex(), i) + xOffset),
-                                        (int)(event.getHistoricalY(aTouchContextMap.getActionIndex(), i) + yOffset),
+                                        histMapped[0],
+                                        histMapped[1],
                                         event.getHistoricalEventTime(i));
                             }
                         }
@@ -2106,18 +2218,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     for (TouchContext aTouchContextMap : touchContextMap) {
                         if (aTouchContextMap.getActionIndex() < event.getPointerCount())
                         {
+                            int[] curMapped = mapToStreamViewCoords(
+                                    view,
+                                    event.getX(aTouchContextMap.getActionIndex()),
+                                    event.getY(aTouchContextMap.getActionIndex()));
                             aTouchContextMap.touchMoveEvent(
-                                    (int)(event.getX(aTouchContextMap.getActionIndex()) + xOffset),
-                                    (int)(event.getY(aTouchContextMap.getActionIndex()) + yOffset),
+                                    curMapped[0],
+                                    curMapped[1],
                                     event.getEventTime());
                         }
                     }
                     break;
                 case MotionEvent.ACTION_CANCEL:
-                    for (TouchContext aTouchContext : touchContextMap) {
-                        aTouchContext.cancelTouch();
-                        aTouchContext.setPointerCount(0);
-                    }
+                    cancelAllTouches();
                     break;
                 default:
                     return false;
@@ -2226,6 +2339,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void stopConnection() {
+        cancelAllTouches();
+        releaseLockedModifiers();
+        if (manualVideoController != null) {
+            manualVideoController.cancel();
+            manualVideoController = null;
+        }
         if (connecting || connected) {
             connecting = connected = false;
             updatePipAutoEnter();
@@ -2433,6 +2552,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 // Update GameManager state to indicate we're in game
                 UiHelper.notifyStreamConnected(Game.this);
+
+                // Start live manual-video controller when host supports it
+                startManualVideoController();
 
                 hideSystemUi(1000);
             }
@@ -2696,5 +2818,660 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             default:
                 return false;
         }
+    }
+
+    // =========================================================================
+    // SideLantern in-stream overlays, live hot settings, manual video & keyboard
+    // =========================================================================
+
+    private void setupSideLanternOverlays() {
+        rootOverlayContainer = (FrameLayout) streamView.getParent();
+
+        // 1x1 IME proxy view for reliable soft keyboard text + backspace forwarding
+        imeProxyView = new ImeProxyView(this);
+        imeProxyView.setListener(new ImeProxyView.Listener() {
+            @Override
+            public void onCommitText(String text) {
+                if (conn == null || text == null || text.isEmpty()) return;
+                if (lockedBarModifiers != 0 && text.length() == 1) {
+                    int vk = asciiToWinVk(text.charAt(0));
+                    if (vk != 0) {
+                        KeyboardShortcut.sendVirtualKeyTap(conn, vk, lockedBarModifiers);
+                        return;
+                    }
+                }
+                conn.sendUtf8Text(text);
+            }
+
+            @Override
+            public void onBackspace(int count) {
+                if (conn == null) return;
+                for (int i = 0; i < count; i++) {
+                    KeyboardShortcut.sendVirtualKeyTap(conn, 0x08, lockedBarModifiers);
+                }
+            }
+
+            @Override
+            public boolean onImeKeyEvent(KeyEvent event) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    return handleKeyDown(event);
+                } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                    return handleKeyUp(event);
+                }
+                return false;
+            }
+        });
+        rootOverlayContainer.addView(imeProxyView, new FrameLayout.LayoutParams(1, 1));
+
+        shortcutStore = new KeyboardShortcutStore(this);
+
+        // Keyboard shortcut bar docked above IME
+        keyboardShortcutBar = new KeyboardShortcutBar(this, shortcutStore);
+        keyboardShortcutBar.setVisibility(View.GONE);
+        keyboardShortcutBar.setCallbacks(new KeyboardShortcutBar.Callbacks() {
+            @Override
+            public void onKeyPressed(int vkCode, int modifierFlag) {
+                if (conn == null) return;
+                if (modifierFlag != 0) {
+                    handleBarModifierToggle(vkCode, modifierFlag);
+                } else {
+                    KeyboardShortcut.sendVirtualKeyTap(conn, vkCode, lockedBarModifiers);
+                }
+            }
+
+            @Override
+            public void onShortcutPressed(KeyboardShortcut shortcut) {
+                if (conn == null || shortcut == null) return;
+                releaseLockedModifiers();
+                KeyboardShortcut.sendShortcut(conn, shortcut);
+            }
+
+            @Override
+            public void onDismissKeyboard() {
+                hideSoftKeyboard();
+            }
+        });
+        FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, SideLanternTheme.dp(this, 48), Gravity.BOTTOM);
+        rootOverlayContainer.addView(keyboardShortcutBar, barLp);
+
+        // Floating draggable gear settings button
+        settingsButton = new StreamSettingsButton(this);
+        settingsButton.setOnSettingsClickListener(() -> {
+            cancelAllTouches();
+            hideSoftKeyboard();
+            if (sidebarOverlay != null) {
+                sidebarOverlay.updateControlState(
+                        prefConfig.touchscreenTrackpad,
+                        prefConfig.onscreenController,
+                        prefConfig.enablePerfOverlay);
+                sidebarOverlay.open();
+            }
+        });
+        rootOverlayContainer.addView(settingsButton);
+
+        // Right-edge sidebar overlay
+        sidebarOverlay = new StreamSidebarOverlay(this, shortcutStore);
+        sidebarOverlay.updateControlState(
+                prefConfig.touchscreenTrackpad,
+                prefConfig.onscreenController,
+                prefConfig.enablePerfOverlay);
+        sidebarOverlay.setCallbacks(new StreamSidebarOverlay.Callbacks() {
+            @Override
+            public void onDismissed() {
+                hideSystemUi(300);
+            }
+
+            @Override
+            public void onExitStream() {
+                exitStreamSession();
+            }
+
+            @Override
+            public void onToggleKeyboard() {
+                if (softKeyboardVisible) {
+                    hideSoftKeyboard();
+                } else {
+                    if (sidebarOverlay != null) {
+                        sidebarOverlay.dismiss();
+                    }
+                    showSoftKeyboard();
+                }
+            }
+
+            @Override
+            public void onResolutionSelected(int width, int height) {
+                if (manualVideoController == null || !manualVideoController.isAvailable()) return;
+                ManualVideoSettings cur = manualVideoController.getResponse().settings;
+                ManualVideoSettings next = new ManualVideoSettings(width, height, cur.frameRate, cur.bitrate);
+                manualVideoController.requestSettings(next, ManualVideoSettings.FIELD_RESOLUTION);
+            }
+
+            @Override
+            public void onFrameRateSelected(int fps) {
+                if (manualVideoController == null || !manualVideoController.isAvailable()) return;
+                ManualVideoSettings cur = manualVideoController.getResponse().settings;
+                ManualVideoSettings next = new ManualVideoSettings(cur.width, cur.height, fps, cur.bitrate);
+                manualVideoController.requestSettings(next, ManualVideoSettings.FIELD_FRAMERATE);
+            }
+
+            @Override
+            public void onBitrateCommitted(int bitrateBudgetKbps) {
+                prefConfig.bitrate = bitrateBudgetKbps;
+                PreferenceConfiguration.saveLiveVideoSettings(Game.this, null, null, null, bitrateBudgetKbps);
+                if (manualVideoController == null || !manualVideoController.isAvailable()) return;
+                ManualVideoSettings cur = manualVideoController.getResponse().settings;
+                manualVideoController.requestSettings(cur, ManualVideoSettings.FIELD_BITRATE, bitrateBudgetKbps);
+            }
+
+            @Override
+            public void onTouchModeChanged(boolean trackpadMode) {
+                applyTouchMode(trackpadMode);
+            }
+
+            @Override
+            public void onOnScreenControlsChanged(boolean enabled) {
+                applyOnScreenControls(enabled);
+            }
+
+            @Override
+            public void onStatisticsOverlayChanged(boolean enabled) {
+                applyStatisticsOverlay(enabled);
+            }
+
+            @Override
+            public void onTriggerShortcut(KeyboardShortcut shortcut) {
+                if (conn == null || shortcut == null) return;
+                releaseLockedModifiers();
+                KeyboardShortcut.sendShortcut(conn, shortcut);
+            }
+
+            @Override
+            public void onShortcutEditorOpened() {
+                hideSoftKeyboard();
+            }
+        });
+        rootOverlayContainer.addView(sidebarOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // Touchscreen 2-finger pinch-zoom detector
+        scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override
+            public boolean onScale(ScaleGestureDetector detector) {
+                if (prefConfig.touchscreenTrackpad) return false;
+                float factor = detector.getScaleFactor();
+                float newScale = Math.max(1.0f, Math.min(4.0f, streamZoomScale * factor));
+                if (newScale != streamZoomScale) {
+                    streamZoomScale = newScale;
+                    applyStreamZoomAndPan();
+                }
+                return true;
+            }
+        });
+
+        // Position floating button & track IME visibility/height
+        rootOverlayContainer.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or2, ob) -> {
+            if ((r - l) != (or2 - ol) || (b - t) != (ob - ot)) {
+                updateSettingsButtonBounds();
+                if (sidebarOverlay != null) {
+                    sidebarOverlay.updatePanelWidth();
+                }
+            }
+        });
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            rootOverlayContainer.setOnApplyWindowInsetsListener((v, insets) -> {
+                int imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
+                onImeHeightChanged(imeBottom);
+                return insets;
+            });
+        } else {
+            rootOverlayContainer.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+                private final Rect visibleRect = new Rect();
+
+                @Override
+                public void onGlobalLayout() {
+                    if (rootOverlayContainer == null) return;
+                    rootOverlayContainer.getWindowVisibleDisplayFrame(visibleRect);
+                    int screenH = rootOverlayContainer.getRootView().getHeight();
+                    int diff = screenH - visibleRect.bottom;
+                    int imeH = diff > SideLanternTheme.dp(Game.this, 100) ? diff : 0;
+                    onImeHeightChanged(imeH);
+                }
+            });
+        }
+
+        rootOverlayContainer.post(this::updateSettingsButtonBounds);
+    }
+
+    private void rebuildTouchContexts() {
+        for (int i = 0; i < touchContextMap.length; i++) {
+            if (!prefConfig.touchscreenTrackpad) {
+                touchContextMap[i] = new AbsoluteTouchContext(conn, i, streamView);
+            } else {
+                touchContextMap[i] = new RelativeTouchContext(conn, i,
+                        REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
+                        streamView, prefConfig);
+            }
+        }
+    }
+
+    private void cancelAllTouches() {
+        for (TouchContext ctx : touchContextMap) {
+            if (ctx != null) {
+                ctx.cancelTouch();
+                ctx.setPointerCount(0);
+            }
+        }
+    }
+
+    private void applyTouchMode(boolean trackpadMode) {
+        if (prefConfig.touchscreenTrackpad == trackpadMode) {
+            return;
+        }
+        prefConfig.touchscreenTrackpad = trackpadMode;
+
+        // Cancel active gestures & block new touches until all fingers lift
+        cancelAllTouches();
+        twoFingerGestureActive = false;
+        if (activeFingerCount > 0) {
+            waitForAllFingersUp = true;
+        }
+
+        // Reset touchscreen zoom/pan
+        resetStreamZoom();
+
+        // Rebuild touch contexts live without reconnecting or rebuilding decoder
+        rebuildTouchContexts();
+
+        // Toggle OSC availability (unavailable in touchscreen mode)
+        if (!trackpadMode) {
+            if (virtualController != null) {
+                virtualController.hide();
+            }
+        } else if (prefConfig.onscreenController) {
+            ensureVirtualControllerVisible();
+        }
+
+        PreferenceConfiguration.saveLiveStreamControls(this, trackpadMode, null, null);
+        if (sidebarOverlay != null) {
+            sidebarOverlay.updateControlState(
+                    prefConfig.touchscreenTrackpad,
+                    prefConfig.onscreenController,
+                    prefConfig.enablePerfOverlay);
+        }
+    }
+
+    private void applyOnScreenControls(boolean enabled) {
+        prefConfig.onscreenController = enabled;
+        PreferenceConfiguration.saveLiveStreamControls(this, null, enabled, null);
+        if (enabled && prefConfig.touchscreenTrackpad) {
+            ensureVirtualControllerVisible();
+        } else if (virtualController != null) {
+            virtualController.hide();
+        }
+        if (sidebarOverlay != null) {
+            sidebarOverlay.updateControlState(
+                    prefConfig.touchscreenTrackpad,
+                    prefConfig.onscreenController,
+                    prefConfig.enablePerfOverlay);
+        }
+    }
+
+    private void ensureVirtualControllerVisible() {
+        if (virtualController == null) {
+            virtualController = new VirtualController(controllerHandler, rootOverlayContainer, this);
+        }
+        virtualController.refreshLayout();
+        virtualController.show();
+        // Keep SideLantern overlays above virtual controller
+        if (keyboardShortcutBar != null) keyboardShortcutBar.bringToFront();
+        if (settingsButton != null) settingsButton.bringToFront();
+        if (sidebarOverlay != null && sidebarOverlay.isOpen()) sidebarOverlay.bringToFront();
+    }
+
+    private void applyStatisticsOverlay(boolean enabled) {
+        prefConfig.enablePerfOverlay = enabled;
+        PreferenceConfiguration.saveLiveStreamControls(this, null, null, enabled);
+        if (performanceOverlayView != null) {
+            performanceOverlayView.setVisibility((enabled && !isHidingOverlays) ? View.VISIBLE : View.GONE);
+        }
+        if (sidebarOverlay != null) {
+            sidebarOverlay.updateControlState(
+                    prefConfig.touchscreenTrackpad,
+                    prefConfig.onscreenController,
+                    prefConfig.enablePerfOverlay);
+        }
+    }
+
+    private void startManualVideoController() {
+        if (conn == null || !conn.isManualVideoEnabled()) {
+            if (sidebarOverlay != null) {
+                sidebarOverlay.updateVideoState(
+                        false, prefConfig.width, prefConfig.height, prefConfig.fps,
+                        prefConfig.bitrate, ManualVideoController.State.UNAVAILABLE, null);
+            }
+            return;
+        }
+        if (manualVideoController != null) {
+            manualVideoController.cancel();
+        }
+        if (manualVideoExecutor == null || manualVideoExecutor.isShutdown()) {
+            manualVideoExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "SideLantern-ManualVideo");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+
+        final int effectiveHttpsPort = conn.getHttpsPort();
+        final NvHTTP manualHttp;
+        try {
+            manualHttp = new NvHTTP(
+                    new ComputerDetails.AddressTuple(hostAddress, hostPort),
+                    effectiveHttpsPort,
+                    hostUniqueId,
+                    hostServerCert,
+                    PlatformBinding.getCryptoProvider(this));
+        } catch (java.io.IOException e) {
+            LimeLog.warning("Failed to initialize manual-video HTTP client: " + e.getMessage());
+            if (sidebarOverlay != null) {
+                sidebarOverlay.updateVideoState(
+                        false, prefConfig.width, prefConfig.height, prefConfig.fps,
+                        prefConfig.bitrate, ManualVideoController.State.UNAVAILABLE, null);
+            }
+            return;
+        }
+
+        manualVideoController = new ManualVideoController(
+                (sessionId, settings, callback) -> manualVideoExecutor.execute(() -> {
+                    ManualVideoSettings.Response resp = manualHttp.executeManualVideoRequest(sessionId, settings);
+                    mainHandler.post(() -> callback.onResponse(resp));
+                }),
+                (delayMs, op) -> mainHandler.postDelayed(op, delayMs),
+                System::currentTimeMillis
+        );
+        manualVideoController.setListener(this::onManualVideoStateChanged);
+        manualVideoController.refreshWithBitrateBudget(
+                prefConfig.bitrate, prefConfig.audioConfiguration.channelCount);
+    }
+
+    private void onManualVideoStateChanged(ManualVideoController ctrl) {
+        ManualVideoSettings.Response resp = ctrl.getResponse();
+        int appliedFields = ctrl.getAppliedFields();
+
+        int displayWidth = prefConfig.width;
+        int displayHeight = prefConfig.height;
+        int displayFps = prefConfig.fps;
+
+        if (resp != null && resp.settings != null) {
+            displayWidth = resp.settings.width;
+            displayHeight = resp.settings.height;
+            displayFps = resp.settings.frameRate;
+
+            if ((appliedFields & ManualVideoSettings.FIELD_FRAMERATE) != 0) {
+                prefConfig.fps = displayFps;
+                if (decoderRenderer != null) {
+                    decoderRenderer.updateFrameRate(displayFps);
+                }
+                updateSurfaceFrameRate(displayFps);
+            }
+
+            if ((appliedFields & (ManualVideoSettings.FIELD_RESOLUTION | ManualVideoSettings.FIELD_FRAMERATE)) != 0) {
+                Integer saveW = (appliedFields & ManualVideoSettings.FIELD_RESOLUTION) != 0 ? displayWidth : null;
+                Integer saveH = (appliedFields & ManualVideoSettings.FIELD_RESOLUTION) != 0 ? displayHeight : null;
+                Integer saveFps = (appliedFields & ManualVideoSettings.FIELD_FRAMERATE) != 0 ? displayFps : null;
+                // Never overwrite user's configured bitrate budget with the host's encoder bitrate
+                PreferenceConfiguration.saveLiveVideoSettings(this, saveW, saveH, saveFps, null);
+            }
+        }
+
+        if (sidebarOverlay != null) {
+            sidebarOverlay.updateVideoState(
+                    ctrl.isAvailable(),
+                    displayWidth,
+                    displayHeight,
+                    displayFps,
+                    prefConfig.bitrate,
+                    ctrl.getState(),
+                    ctrl.getErrorReason());
+        }
+    }
+
+    private void updateSurfaceFrameRate(int fps) {
+        if (streamView == null || !surfaceCreated || fps <= 0) return;
+        Surface surface = streamView.getHolder().getSurface();
+        if (surface == null || !surface.isValid()) return;
+        float desiredFrameRate = (mayReduceRefreshRate() || desiredRefreshRate < fps) ? fps : desiredRefreshRate;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            surface.setFrameRate(desiredFrameRate,
+                    Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            surface.setFrameRate(desiredFrameRate,
+                    Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+        }
+    }
+
+    private void onDecoderVideoSizeChanged(int newWidth, int newHeight) {
+        if (newWidth <= 0 || newHeight <= 0) return;
+        if (prefConfig.width == newWidth && prefConfig.height == newHeight) return;
+
+        prefConfig.width = newWidth;
+        prefConfig.height = newHeight;
+
+        cancelAllTouches();
+        resetStreamZoom();
+
+        if (prefConfig.stretchVideo) {
+            streamView.getHolder().setFixedSize(newWidth, newHeight);
+        } else {
+            streamView.setDesiredAspectRatio((double) newWidth / (double) newHeight);
+            streamView.requestLayout();
+        }
+    }
+
+    private void showSoftKeyboard() {
+        if (imeProxyView == null) return;
+        if (sidebarOverlay != null && sidebarOverlay.isOpen()) {
+            sidebarOverlay.dismiss();
+        }
+        imeProxyView.requestFocus();
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.showSoftInput(imeProxyView, InputMethodManager.SHOW_FORCED);
+        }
+        softKeyboardVisible = true;
+        if (keyboardShortcutBar != null && !isHidingOverlays) {
+            keyboardShortcutBar.setVisibility(View.VISIBLE);
+            keyboardShortcutBar.bringToFront();
+        }
+        if (sidebarOverlay != null) {
+            sidebarOverlay.setKeyboardVisible(true);
+        }
+    }
+
+    private void hideSoftKeyboard() {
+        releaseLockedModifiers();
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            View tokenView = imeProxyView != null ? imeProxyView : streamView;
+            if (tokenView != null) {
+                imm.hideSoftInputFromWindow(tokenView.getWindowToken(), 0);
+            }
+        }
+        softKeyboardVisible = false;
+        currentImeHeight = 0;
+        if (keyboardShortcutBar != null) {
+            keyboardShortcutBar.setVisibility(View.GONE);
+        }
+        if (sidebarOverlay != null) {
+            sidebarOverlay.setKeyboardVisible(false);
+        }
+        if (streamView != null) {
+            streamView.requestFocus();
+        }
+        updateSettingsButtonBounds();
+        hideSystemUi(300);
+    }
+
+    private void onImeHeightChanged(int imeHeightPx) {
+        if (imeHeightPx == currentImeHeight) return;
+        currentImeHeight = imeHeightPx;
+        boolean visible = imeHeightPx > SideLanternTheme.dp(this, 60);
+        if (visible) {
+            softKeyboardVisible = true;
+            if (sidebarOverlay != null && sidebarOverlay.isOpen()) {
+                sidebarOverlay.dismiss();
+            }
+            if (keyboardShortcutBar != null && !isHidingOverlays) {
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) keyboardShortcutBar.getLayoutParams();
+                lp.bottomMargin = imeHeightPx;
+                keyboardShortcutBar.setLayoutParams(lp);
+                keyboardShortcutBar.setVisibility(View.VISIBLE);
+                keyboardShortcutBar.bringToFront();
+            }
+        } else if (softKeyboardVisible) {
+            softKeyboardVisible = false;
+            releaseLockedModifiers();
+            if (keyboardShortcutBar != null) {
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) keyboardShortcutBar.getLayoutParams();
+                lp.bottomMargin = 0;
+                keyboardShortcutBar.setLayoutParams(lp);
+                keyboardShortcutBar.setVisibility(View.GONE);
+            }
+            hideSystemUi(300);
+        }
+        if (sidebarOverlay != null) {
+            sidebarOverlay.setKeyboardVisible(softKeyboardVisible);
+        }
+        updateSettingsButtonBounds();
+    }
+
+    private void handleBarModifierToggle(int vkCode, int modifierFlag) {
+        boolean nowActive = (lockedBarModifiers & modifierFlag) == 0;
+        if (nowActive) {
+            lockedBarModifiers |= modifierFlag;
+            KeyboardShortcut.sendVirtualKeyEdge(conn, vkCode, true, lockedBarModifiers);
+        } else {
+            lockedBarModifiers &= ~modifierFlag;
+            KeyboardShortcut.sendVirtualKeyEdge(conn, vkCode, false, lockedBarModifiers);
+        }
+        if (keyboardShortcutBar != null) {
+            keyboardShortcutBar.setActiveModifiers(lockedBarModifiers);
+        }
+    }
+
+    private void releaseLockedModifiers() {
+        if (lockedBarModifiers == 0) return;
+        int[][] mods = new int[][]{
+                {KeyboardShortcut.MOD_WIN, KeyboardShortcut.VK_WIN},
+                {KeyboardShortcut.MOD_ALT, KeyboardShortcut.VK_ALT},
+                {KeyboardShortcut.MOD_CTRL, KeyboardShortcut.VK_CTRL},
+                {KeyboardShortcut.MOD_SHIFT, KeyboardShortcut.VK_SHIFT}
+        };
+        int remaining = lockedBarModifiers;
+        lockedBarModifiers = 0;
+        if (conn != null) {
+            for (int[] m : mods) {
+                if ((remaining & m[0]) != 0) {
+                    remaining &= ~m[0];
+                    KeyboardShortcut.sendVirtualKeyEdge(conn, m[1], false, remaining);
+                }
+            }
+        }
+        if (keyboardShortcutBar != null) {
+            keyboardShortcutBar.setActiveModifiers(0);
+        }
+    }
+
+    private static int asciiToWinVk(char c) {
+        if (c >= 'a' && c <= 'z') return Character.toUpperCase(c);
+        if (c >= 'A' && c <= 'Z') return c;
+        if (c >= '0' && c <= '9') return c;
+        switch (c) {
+            case ' ': return 0x20;
+            case '\n': case '\r': return 0x0D;
+            case '\t': return 0x09;
+            case '-': case '_': return 0xBD;
+            case '=': case '+': return 0xBB;
+            case '[': case '{': return 0xDB;
+            case ']': case '}': return 0xDD;
+            case '\\': case '|': return 0xDC;
+            case ';': case ':': return 0xBA;
+            case '\'': case '"': return 0xDE;
+            case '`': case '~': return 0xC0;
+            case ',': case '<': return 0xBC;
+            case '.': case '>': return 0xBE;
+            case '/': case '?': return 0xBF;
+            default: return 0;
+        }
+    }
+
+    private void resetStreamZoom() {
+        streamZoomScale = 1.0f;
+        streamPanX = 0f;
+        streamPanY = 0f;
+        applyStreamZoomAndPan();
+    }
+
+    private void applyStreamZoomAndPan() {
+        if (streamView == null) return;
+        if (streamZoomScale <= 1.0f) {
+            streamZoomScale = 1.0f;
+            streamPanX = 0f;
+            streamPanY = 0f;
+        } else {
+            float maxPanX = streamView.getWidth() * (streamZoomScale - 1.0f) * 0.5f;
+            float maxPanY = streamView.getHeight() * (streamZoomScale - 1.0f) * 0.5f;
+            streamPanX = Math.max(-maxPanX, Math.min(maxPanX, streamPanX));
+            streamPanY = Math.max(-maxPanY, Math.min(maxPanY, streamPanY));
+        }
+        streamView.setScaleX(streamZoomScale);
+        streamView.setScaleY(streamZoomScale);
+        streamView.setTranslationX(streamPanX);
+        streamView.setTranslationY(streamPanY);
+    }
+
+    private int[] mapToStreamViewCoords(View sourceView, float rawX, float rawY) {
+        if (prefConfig.touchscreenTrackpad) {
+            return new int[]{(int) rawX, (int) rawY};
+        }
+        if (sourceView == streamView) {
+            return new int[]{(int) rawX, (int) rawY};
+        }
+        float w = streamView.getWidth();
+        float h = streamView.getHeight();
+        if (w <= 0 || h <= 0) {
+            return new int[]{(int) rawX, (int) rawY};
+        }
+        float cx = streamView.getLeft() + w * 0.5f + streamView.getTranslationX();
+        float cy = streamView.getTop() + h * 0.5f + streamView.getTranslationY();
+        float localX = (rawX - cx) / streamZoomScale + w * 0.5f;
+        float localY = (rawY - cy) / streamZoomScale + h * 0.5f;
+        return new int[]{Math.round(localX), Math.round(localY)};
+    }
+
+    private void updateSettingsButtonBounds() {
+        if (settingsButton == null || rootOverlayContainer == null) return;
+        int w = rootOverlayContainer.getWidth();
+        int h = rootOverlayContainer.getHeight();
+        if (w <= 0 || h <= 0) return;
+        int margin = SideLanternTheme.dp(this, 8);
+        int bottomReserve = currentImeHeight + (softKeyboardVisible ? SideLanternTheme.dp(this, 56) : 0);
+        int bottom = Math.max(margin + settingsButton.getButtonSizePx(), h - margin - bottomReserve);
+        settingsButton.updateMovementBounds(new Rect(margin, margin, Math.max(margin + settingsButton.getButtonSizePx(), w - margin), bottom));
+    }
+
+    private void exitStreamSession() {
+        cancelAllTouches();
+        releaseLockedModifiers();
+        hideSoftKeyboard();
+        if (sidebarOverlay != null) {
+            sidebarOverlay.dismiss();
+        }
+        displayedFailureDialog = true;
+        stopConnection();
+        finish();
     }
 }

@@ -275,6 +275,10 @@ public class AddComputerManually extends Activity {
         UiHelper.notifyNewRootView(this);
 
         this.hostText = findViewById(R.id.hostTextView);
+        hostText.setHint(R.string.sl_devices_address_placeholder);
+        hostText.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         hostText.setImeOptions(EditorInfo.IME_ACTION_DONE);
         hostText.setOnEditorActionListener(new TextView.OnEditorActionListener() {
             @Override

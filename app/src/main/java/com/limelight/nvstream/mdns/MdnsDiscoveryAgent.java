@@ -58,6 +58,12 @@ public abstract class MdnsDiscoveryAgent {
         }
     }
 
+    public void clearComputers() {
+        synchronized (computers) {
+            computers.clear();
+        }
+    }
+
     protected static Inet6Address getLocalAddress(Inet6Address[] addresses) {
         for (Inet6Address addr : addresses) {
             if (addr.isLinkLocalAddress() || addr.isSiteLocalAddress()) {

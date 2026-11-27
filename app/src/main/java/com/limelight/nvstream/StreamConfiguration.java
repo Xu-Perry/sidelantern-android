@@ -28,6 +28,8 @@ public class StreamConfiguration {
     private int colorRange;
     private int colorSpace;
     private boolean persistGamepadsAfterDisconnect;
+    private String sideLanternMode;
+    private boolean resumeAnyRunningSession;
 
     public static class Builder {
         private StreamConfiguration config = new StreamConfiguration();
@@ -128,6 +130,16 @@ public class StreamConfiguration {
             return this;
         }
 
+        public StreamConfiguration.Builder setSideLanternMode(String mode) {
+            config.sideLanternMode = mode;
+            return this;
+        }
+
+        public StreamConfiguration.Builder setResumeAnyRunningSession(boolean resumeAny) {
+            config.resumeAnyRunningSession = resumeAny;
+            return this;
+        }
+
         public StreamConfiguration build() {
             return config;
         }
@@ -220,5 +232,13 @@ public class StreamConfiguration {
 
     public int getColorSpace() {
         return colorSpace;
+    }
+
+    public String getSideLanternMode() {
+        return sideLanternMode;
+    }
+
+    public boolean getResumeAnyRunningSession() {
+        return resumeAnyRunningSession;
     }
 }

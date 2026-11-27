@@ -64,6 +64,13 @@
             android:exported="true">
         </provider>
 
+        <provider
+            android:name=".files.SideLanternFileProvider"
+            android:authorities="files.${applicationId}"
+            android:exported="false"
+            android:grantUriPermissions="true">
+        </provider>
+
         <!-- Samsung multi-window support -->
         <uses-library
             android:name="com.sec.android.app.multiwindow"
@@ -146,6 +153,7 @@
         <activity
             android:name=".Game"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection"
+            android:windowSoftInputMode="adjustNothing|stateHidden"
             android:noHistory="true"
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true"
@@ -186,6 +194,18 @@
             <meta-data android:name="WindowManagerPreference:FreeformWindowSize" android:value="system-default" />
             <meta-data android:name="WindowManagerPreference:FreeformWindowOrientation" android:value="landscape" />
         </activity>
+
+        <activity
+            android:name=".files.FileTransferActivity"
+            android:resizeableActivity="true"
+            android:enableOnBackInvokedCallback="true"
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection" />
+
+        <activity
+            android:name=".files.RemoteFilesActivity"
+            android:resizeableActivity="true"
+            android:enableOnBackInvokedCallback="true"
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection" />
     </application>
 
 </manifest>

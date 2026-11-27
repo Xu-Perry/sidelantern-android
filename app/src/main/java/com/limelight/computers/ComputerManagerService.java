@@ -24,6 +24,7 @@ import com.limelight.nvstream.http.PairingManager;
 import com.limelight.nvstream.mdns.MdnsComputer;
 import com.limelight.nvstream.mdns.MdnsDiscoveryListener;
 import com.limelight.utils.CacheHelper;
+import com.limelight.utils.DeviceNameHelper;
 import com.limelight.utils.NetHelper;
 import com.limelight.utils.ServerHelper;
 
@@ -263,6 +264,12 @@ public class ComputerManagerService extends Service {
 
         public void removeComputer(ComputerDetails computer) {
             ComputerManagerService.this.removeComputer(computer);
+        }
+
+        public void refreshDiscovery() {
+            if (discoveryBinder != null) {
+                discoveryBinder.refreshDiscovery(MDNS_QUERY_PERIOD_MS);
+            }
         }
 
         public void stopPolling() {
@@ -524,6 +531,10 @@ public class ComputerManagerService extends Service {
         }
 
         releaseLocalDatabaseReference();
+
+        if (pollingActive && discoveryBinder != null) {
+            discoveryBinder.refreshDiscovery(MDNS_QUERY_PERIOD_MS);
+        }
     }
 
     private boolean getLocalDatabaseReference() {
@@ -721,6 +732,7 @@ public class ComputerManagerService extends Service {
 
         // Lookup or generate this device's UID
         idManager = new IdentityManager(this);
+        DeviceNameHelper.initialize(this, idManager.getUniqueId());
 
         // Initialize the DB
         dbManager = new ComputerDatabaseManager(this);
